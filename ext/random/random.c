@@ -25,8 +25,6 @@
 
 #include "php.h"
 
-#include "Zend/zend_attributes.h"
-#include "Zend/zend_enum.h"
 #include "Zend/zend_exceptions.h"
 
 #include "php_random.h"
@@ -43,10 +41,6 @@
 # include <process.h>
 #else
 # include <sys/time.h>
-#endif
-
-#ifdef HAVE_SYS_PARAM_H
-# include <sys/param.h>
 #endif
 
 #include "random_arginfo.h"
@@ -273,7 +267,7 @@ PHPAPI void php_random_engine_common_free_object(zend_object *object)
 
 PHPAPI zend_object *php_random_engine_common_clone_object(zend_object *object)
 {
-	php_random_engine *old_engine = php_random_engine_from_obj(object);
+	const php_random_engine *old_engine = php_random_engine_from_obj(object);
 	php_random_engine *new_engine = php_random_engine_from_obj(old_engine->std.ce->create_object(old_engine->std.ce));
 
 	new_engine->engine.algo = old_engine->engine.algo;
@@ -322,7 +316,7 @@ PHPAPI void *php_random_default_status(void)
 /* }}} */
 
 /* this is read-only, so it's ok */
-ZEND_SET_ALIGNED(16, static const char hexconvtab[]) = "0123456789abcdef";
+alignas(16) static const char hexconvtab[] = "0123456789abcdef";
 
 /* {{{ php_random_bin2hex_le */
 /* stolen from standard/string.c */
@@ -354,8 +348,8 @@ PHPAPI zend_string *php_random_bin2hex_le(const void *ptr, const size_t len)
 /* stolen from standard/string.c */
 PHPAPI bool php_random_hex2bin_le(zend_string *hexstr, void *dest)
 {
-	size_t len = hexstr->len >> 1;
-	unsigned char *str = (unsigned char *) hexstr->val, c, l, d;
+	size_t len = ZSTR_LEN(hexstr) >> 1;
+	unsigned char *str = (unsigned char *) ZSTR_VAL(hexstr), c, l, d;
 	unsigned char *ptr = (unsigned char *) dest;
 	int is_letter, i = 0;
 

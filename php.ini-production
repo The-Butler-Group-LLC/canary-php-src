@@ -613,6 +613,12 @@ ignore_repeated_source = Off
 ; Production Value: On
 ;fatal_error_backtraces = On
 
+; This directive controls whether PHP will print the actual arguments of a
+; function upon an error. If this is off (or there was an error fetching the
+; arguments), the function providing the error may optionally provide some
+; additional information after the problem function's name.
+;error_include_args = Off
+
 ;;;;;;;;;;;;;;;;;
 ; Data Handling ;
 ;;;;;;;;;;;;;;;;;
@@ -1029,7 +1035,7 @@ cli_server.color = On
 [Pcre]
 ; PCRE library backtracking limit.
 ; https://php.net/pcre.backtrack-limit
-;pcre.backtrack_limit=100000
+;pcre.backtrack_limit=1000000
 
 ; PCRE library recursion limit.
 ; Please note that if you set this value to a high number you may consume all
@@ -1307,10 +1313,9 @@ session.save_handler = files
 ; Strict session mode does not accept an uninitialized session ID, and
 ; regenerates the session ID if the browser sends an uninitialized session ID.
 ; Strict mode protects applications from session fixation via a session adoption
-; vulnerability. It is disabled by default for maximum compatibility, but
-; enabling it is encouraged.
+; vulnerability.
 ; https://wiki.php.net/rfc/strict_sessions
-session.use_strict_mode = 0
+session.use_strict_mode = 1
 
 ; Whether to use cookies.
 ; https://php.net/session.use-cookies
@@ -1352,13 +1357,13 @@ session.cookie_domain =
 ; Whether or not to add the httpOnly flag to the cookie, which makes it
 ; inaccessible to browser scripting languages such as JavaScript.
 ; https://php.net/session.cookie-httponly
-session.cookie_httponly =
+session.cookie_httponly = 1
 
 ; Add SameSite attribute to cookie to help mitigate Cross-Site Request Forgery (CSRF/XSRF)
 ; Current valid values are "Strict", "Lax" or "None". When using "None",
 ; make sure to include the quotes, as `none` is interpreted like `false` in ini files.
 ; https://tools.ietf.org/html/draft-west-first-party-cookies-07
-session.cookie_samesite =
+session.cookie_samesite = "Lax"
 
 ; Handler used to serialize data. php is the standard serializer of PHP.
 ; https://php.net/session.serialize-handler
@@ -1681,8 +1686,8 @@ ldap.max_links = -1
 ;opcache.interned_strings_buffer=8
 
 ; The maximum number of keys (scripts) in the OPcache hash table.
-; Only numbers between 200 and 1000000 are allowed.
-;opcache.max_accelerated_files=10000
+; Only numbers in {223, 463, 983, 1979, 3907, 7963, 16229, 32531, 65407, 130987, 262237, 524521, 1048793} are allowed.
+;opcache.max_accelerated_files=16229
 
 ; The maximum percentage of "wasted" memory until a restart is scheduled.
 ;opcache.max_wasted_percentage=5

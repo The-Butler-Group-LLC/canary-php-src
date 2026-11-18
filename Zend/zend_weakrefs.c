@@ -58,10 +58,10 @@ static zend_class_entry *zend_ce_weakmap;
 static zend_object_handlers zend_weakref_handlers;
 static zend_object_handlers zend_weakmap_handlers;
 
-#define zend_weakref_from(o) ((zend_weakref*)(((char*) o) - offsetof(zend_weakref, std)))
+#define zend_weakref_from(o) (ZEND_CONTAINER_OF(o, zend_weakref, std))
 #define zend_weakref_fetch(z) zend_weakref_from(Z_OBJ_P(z))
 
-#define zend_weakmap_from(o) ((zend_weakmap*)(((char*) o) - offsetof(zend_weakmap, std)))
+#define zend_weakmap_from(o) (ZEND_CONTAINER_OF(o, zend_weakmap, std))
 #define zend_weakmap_fetch(z) zend_weakmap_from(Z_OBJ_P(z))
 
 static inline void zend_weakref_unref_single(
@@ -380,7 +380,7 @@ static zval *zend_weakmap_read_dimension(zend_object *object, zval *offset, int 
 		if (zv == NULL) {
 			if (type != BP_VAR_IS) {
 				zend_throw_error(NULL,
-					"Object %s#%d not contained in WeakMap", ZSTR_VAL(obj_addr->ce->name), obj_addr->handle);
+					"Object %pS#%d not contained in WeakMap", obj_addr->ce->name, obj_addr->handle);
 				return NULL;
 			}
 			return NULL;
@@ -488,8 +488,7 @@ static HashTable *zend_weakmap_get_properties_for(zend_object *object, zend_prop
 		zval pair;
 		array_init(&pair);
 
-		GC_ADDREF(obj);
-		add_assoc_object(&pair, "key", obj);
+		add_assoc_object(&pair, "key", zend_object_copy(obj));
 		Z_TRY_ADDREF_P(val);
 		add_assoc_zval(&pair, "value", val);
 

@@ -27,9 +27,7 @@ typedef struct _dom_object {
 	zend_object std;
 } dom_object;
 
-static inline dom_object *php_dom_obj_from_obj(zend_object *obj) {
-	return (dom_object*)((char*)(obj) - offsetof(dom_object, std));
-}
+#define php_dom_obj_from_obj(obj) ZEND_CONTAINER_OF(obj, dom_object, std)
 
 #define Z_DOMOBJ_P(zv)  php_dom_obj_from_obj(Z_OBJ_P((zv)))
 
@@ -57,8 +55,8 @@ PHP_DOM_EXPORT xmlNodePtr dom_object_get_node(dom_object *obj);
 #define NODE_GET_OBJ(__ptr, __id, __prtype, __intern) { \
 	__intern = Z_LIBXML_NODE_P(__id); \
 	if (UNEXPECTED(__intern->node == NULL)) { \
-		php_error_docref(NULL, E_WARNING, "Couldn't fetch %s", \
-			ZSTR_VAL(Z_OBJCE_P(__zv)->name));\
+		php_error_docref(NULL, E_WARNING, "Couldn't fetch %pS", \
+			Z_OBJCE_P(__zv)->name);\
 		RETURN_NULL();\
 	} \
 	__ptr = (__prtype)__intern->node->node; \

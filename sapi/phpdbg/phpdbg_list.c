@@ -32,7 +32,7 @@
 ZEND_EXTERN_MODULE_GLOBALS(phpdbg)
 
 #define PHPDBG_LIST_COMMAND_D(f, h, a, m, l, s, flags) \
-	PHPDBG_COMMAND_D_EXP(f, h, a, m, l, s, &phpdbg_prompt_commands[12], flags)
+	PHPDBG_COMMAND_D_EXP(f, h, a, m, l, s, &phpdbg_prompt_commands[14], flags)
 
 const phpdbg_command_t phpdbg_list_commands[] = {
 	PHPDBG_LIST_COMMAND_D(lines,     "lists the specified lines",    'l', list_lines,  NULL, "l", PHPDBG_ASYNC_SAFE),
@@ -88,15 +88,12 @@ PHPDBG_LIST(method) /* {{{ */
 
 	if (phpdbg_safe_class_lookup(param->method.class, strlen(param->method.class), &ce) == SUCCESS) {
 		zend_function *function;
-		char *lcname = zend_str_tolower_dup(param->method.name, strlen(param->method.name));
 
-		if ((function = zend_hash_str_find_ptr(&ce->function_table, lcname, strlen(lcname)))) {
+		if ((function = zend_hash_str_find_ptr_lc(&ce->function_table, param->method.name, strlen(param->method.name)))) {
 			phpdbg_list_function(function);
 		} else {
 			phpdbg_error("Could not find %s::%s", param->method.class, param->method.name);
 		}
-
-		efree(lcname);
 	} else {
 		phpdbg_error("Could not find the class %s", param->method.class);
 	}

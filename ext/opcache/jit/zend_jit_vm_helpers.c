@@ -30,7 +30,7 @@
 #include "zend_jit_internal.h"
 
 #ifdef HAVE_GCC_GLOBAL_REGS
-# pragma GCC diagnostic ignored "-Wvolatile-register-var"
+ZEND_DIAGNOSTIC_IGNORED_START("-Wvolatile-register-var")
 # if defined(__x86_64__)
 register zend_execute_data* volatile execute_data __asm__("%r14");
 register const zend_op* volatile opline __asm__("%r15");
@@ -41,7 +41,7 @@ register const zend_op* volatile opline __asm__("%edi");
 register zend_execute_data* volatile execute_data __asm__("x27");
 register const zend_op* volatile opline __asm__("x28");
 # endif
-# pragma GCC diagnostic warning "-Wvolatile-register-var"
+ZEND_DIAGNOSTIC_IGNORED_END
 #endif
 
 #if ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL
@@ -680,11 +680,20 @@ static int zend_jit_trace_record_fake_init_call(zend_execute_data *call, zend_ji
 	return zend_jit_trace_record_fake_init_call_ex(call, trace_buffer, idx, is_megamorphic, 0);
 }
 
-static int zend_jit_trace_subtrace(zend_jit_trace_rec *trace_buffer, int start, int end, uint8_t event, const zend_op_array *op_array, const zend_op *opline)
+static int zend_jit_trace_subtrace(zend_execute_data *call, zend_jit_trace_rec *trace_buffer, int start, int end, uint8_t event, const zend_op_array *op_array, const zend_op *opline)
 {
 	int idx;
 
 	TRACE_START(ZEND_JIT_TRACE_START, event, op_array, opline);
+	if (call) {
+		idx = zend_jit_trace_record_fake_init_call(call, trace_buffer, idx, 0);
+		if (idx < 0) {
+			return idx;
+		}
+	}
+	if (idx + (end - start) >= JIT_G(max_trace_length) - 2) {
+		return -1;
+	}
 	memmove(trace_buffer + idx, trace_buffer + start, (end - start) * sizeof(zend_jit_trace_rec));
 	return idx + (end - start);
 }
@@ -842,6 +851,16 @@ zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data  *ex,
 				}
 			}
 			op1_type |= flags;
+		} else if (opline->opcode == ZEND_RECV) {
+			/* Record the class of an object passed to a class-typed parameter */
+			ZEND_ASSERT(opline->op1.num <= op_array->num_args);
+			if (ZEND_TYPE_IS_COMPLEX(op_array->arg_info[opline->op1.num - 1].type)) {
+				zval *zv = EX_VAR(opline->result.var);
+
+				if (Z_TYPE_P(zv) == IS_OBJECT) {
+					ce1 = Z_OBJCE_P(zv);
+				}
+			}
 		} else if (opline->op1_type == IS_UNUSED && (op_array->fn_flags & ZEND_ACC_CLOSURE)) {
 			uint32_t op1_flags = ZEND_VM_OP1_FLAGS(zend_get_opcode_flags(opline->opcode));
 			if ((op1_flags & ZEND_VM_OP_MASK) == ZEND_VM_OP_THIS) {
@@ -978,6 +997,7 @@ zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data  *ex,
 					}
 				}
 				break;
+			case ZEND_FETCH_OBJ_FUNC_ARG:
 			case ZEND_FETCH_OBJ_R: {
 				if (opline->op2_type == IS_CONST) {
 					/* Remove the SIMPLE_GET flag to avoid inlining hooks. */
@@ -992,7 +1012,6 @@ zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data  *ex,
 			case ZEND_FETCH_OBJ_W:
 			case ZEND_FETCH_OBJ_RW:
 			case ZEND_FETCH_OBJ_IS:
-			case ZEND_FETCH_OBJ_FUNC_ARG:
 			case ZEND_FETCH_OBJ_UNSET:
 			case ZEND_ASSIGN_OBJ:
 			case ZEND_ASSIGN_OBJ_OP:
@@ -1057,7 +1076,8 @@ zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data  *ex,
 				TRACE_RECORD(ZEND_JIT_TRACE_DO_ICALL, 0, func);
 			}
 		} else if (opline->opcode == ZEND_INCLUDE_OR_EVAL
-				|| opline->opcode == ZEND_CALLABLE_CONVERT) {
+				|| opline->opcode == ZEND_CALLABLE_CONVERT
+				|| opline->opcode == ZEND_CALLABLE_CONVERT_PARTIAL) {
 			/* TODO: Support tracing JIT for ZEND_CALLABLE_CONVERT. */
 			stop = ZEND_JIT_TRACE_STOP_INTERPRETER;
 			break;
@@ -1070,6 +1090,11 @@ zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data  *ex,
 		if (UNEXPECTED(opline == zend_jit_halt_op)) {
 #else
 		opline = handler(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+# if ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL
+		while (UNEXPECTED(opline == zend_jit_interrupt_op)) {
+			opline = zend_vm_handle_interrupt(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+		}
+# endif
 		if (UNEXPECTED(((uintptr_t)opline & ~ZEND_VM_ENTER_BIT) == 0)) {
 #endif
 			if (prev_opline->opcode == ZEND_YIELD || prev_opline->opcode == ZEND_YIELD_FROM) {
@@ -1095,6 +1120,8 @@ zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data  *ex,
 			if (UNEXPECTED(!jit_extension)
 			 || UNEXPECTED(!(jit_extension->func_info.flags & ZEND_FUNC_JIT_ON_HOT_TRACE))) {
 				if (execute_data->prev_execute_data != prev_execute_data) {
+					stop = ZEND_JIT_TRACE_STOP_RETURN;
+				} else {
 					stop = ZEND_JIT_TRACE_STOP_INTERPRETER;
 				}
 				break;
@@ -1344,8 +1371,13 @@ zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data  *ex,
 
 				if (opline == last_loop_opline
 				 && level == last_loop_level) {
-					idx = zend_jit_trace_subtrace(trace_buffer,
+					int ret = zend_jit_trace_subtrace(EX(call), trace_buffer,
 						last_loop, idx, ZEND_JIT_TRACE_START_LOOP, op_array, opline);
+					if (ret < 0) {
+						stop = ZEND_JIT_TRACE_STOP_TOO_LONG;
+						break;
+					}
+					idx = ret;
 					start = ZEND_JIT_TRACE_START_LOOP;
 					stop = ZEND_JIT_TRACE_STOP_LOOP;
 					ret_level = 0;

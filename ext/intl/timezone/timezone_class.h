@@ -46,9 +46,7 @@ typedef struct {
 	zend_object		zo;
 } TimeZone_object;
 
-static inline TimeZone_object *php_intl_timezone_fetch_object(zend_object *obj) {
-	return (TimeZone_object *)((char*)(obj) - offsetof(TimeZone_object, zo));
-}
+#define php_intl_timezone_fetch_object(obj) ZEND_CONTAINER_OF(obj, TimeZone_object, zo)
 #define Z_INTL_TIMEZONE_P(zv) php_intl_timezone_fetch_object(Z_OBJ_P(zv))
 
 #define TIMEZONE_ERROR(to)						(to)->err
@@ -67,13 +65,15 @@ static inline TimeZone_object *php_intl_timezone_fetch_object(zend_object *obj) 
 	}
 
 zval *timezone_convert_to_datetimezone(const TimeZone *timeZone, intl_error *outside_error, zval *ret);
-TimeZone *timezone_process_timezone_argument(zend_object *timezone_object, zend_string *timezone_string, intl_error *error);
+TimeZone *timezone_process_timezone_argument(zend_object *timezone_object, zend_string *timezone_string, intl_error *error, uint32_t arg_num);
 
 void timezone_object_construct(const TimeZone *zone, zval *object, int owned);
 
+BEGIN_EXTERN_C()
 void timezone_register_IntlTimeZone_class(void);
 
 extern zend_class_entry *TimeZone_ce_ptr;
 extern zend_object_handlers TimeZone_handlers;
+END_EXTERN_C()
 
 #endif /* #ifndef TIMEZONE_CLASS_H */

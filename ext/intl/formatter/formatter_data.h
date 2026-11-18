@@ -17,32 +17,24 @@
 
 #include <php.h>
 
-#include <unicode/unum.h>
+#ifdef __cplusplus
+#include <unicode/numfmt.h>
+using icu::NumberFormat;
+#else
+typedef void NumberFormat;
+#endif
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 #include "intl_error.h"
-#ifdef __cplusplus
-}
-#endif
 
 typedef struct {
 	// error hangling
 	intl_error      error;
 
 	// formatter handling
-	UNumberFormat*  unum;
+	NumberFormat*    unum;
 } formatter_data;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-formatter_data* formatter_data_create( void );
 void formatter_data_init( formatter_data* nf_data );
 void formatter_data_free( formatter_data* nf_data );
-#ifdef __cplusplus
-}
-#endif
 
 #endif // FORMATTER_DATA_H

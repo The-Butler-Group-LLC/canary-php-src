@@ -38,9 +38,7 @@ typedef struct {
 	zend_object	zo;
 } Calendar_object;
 
-static inline Calendar_object *php_intl_calendar_fetch_object(zend_object *obj) {
-	return (Calendar_object *)((char*)(obj) - offsetof(Calendar_object, zo));
-}
+#define php_intl_calendar_fetch_object(obj) ZEND_CONTAINER_OF(obj, Calendar_object, zo)
 #define Z_INTL_CALENDAR_P(zv) php_intl_calendar_fetch_object(Z_OBJ_P(zv))
 
 #define CALENDAR_ERROR(co)		(co)->err
@@ -65,10 +63,12 @@ Calendar *calendar_fetch_native_calendar(zend_object *object);
 
 void calendar_object_construct(zval *object, Calendar *calendar);
 
+BEGIN_EXTERN_C()
 void calendar_register_IntlCalendar_class(void);
 
 extern zend_class_entry *Calendar_ce_ptr, *GregorianCalendar_ce_ptr;
 
 extern zend_object_handlers Calendar_handlers;
+END_EXTERN_C()
 
 #endif /* #ifndef CALENDAR_CLASS_H */

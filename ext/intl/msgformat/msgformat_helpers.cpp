@@ -21,7 +21,6 @@
 #include <limits.h>
 #include <unicode/msgfmt.h>
 #include <unicode/chariter.h>
-#include <unicode/ustdio.h>
 #include <unicode/timezone.h>
 #include <unicode/datefmt.h>
 #include <unicode/calendar.h>
@@ -32,14 +31,12 @@
 #include "../intl_convertcpp.h"
 #include "../common/common_date.h"
 
-extern "C" {
 #include "php_intl.h"
 #include "msgformat_class.h"
 #include "msgformat_helpers.h"
 #include "intl_convert.h"
 #define USE_TIMEZONE_POINTER
 #include "../timezone/timezone_class.h"
-}
 
 U_NAMESPACE_BEGIN
 /**
@@ -74,13 +71,6 @@ using icu::MessageFormat;
 using icu::MessagePattern;
 using icu::MessageFormatAdapter;
 using icu::FieldPosition;
-
-U_CFUNC int32_t umsg_format_arg_count(UMessageFormat *fmt)
-{
-	int32_t fmt_count = 0;
-	MessageFormatAdapter::phpGetArgTypeList(*(const MessageFormat*)fmt, fmt_count);
-	return fmt_count;
-}
 
 static void arg_types_dtor(zval *el) {
 	efree(Z_PTR_P(el));
@@ -184,7 +174,7 @@ static HashTable *umsg_parse_format(MessageFormatter_object *mfo,
 						(void*)&bogusType, sizeof(bogusType));
 			}
 		} else if (name_part.getType() == UMSGPAT_PART_TYPE_ARG_NUMBER) {
-			int32_t argNumber = name_part.getValue();
+			const int32_t argNumber = name_part.getValue();
 			if (argNumber < 0) {
 				intl_errors_set(&err, U_INVALID_FORMAT_ERROR,
 					"Found part with negative number");
@@ -341,7 +331,7 @@ static void umsg_set_timezone(MessageFormatter_object *mfo,
 		}
 
 		if (used_tz == NULL) {
-			used_tz = timezone_process_timezone_argument(nullptr, nullptr, &err);
+			used_tz = timezone_process_timezone_argument(nullptr, nullptr, &err, 1);
 			if (used_tz == NULL) {
 				continue;
 			}
@@ -359,12 +349,12 @@ static void umsg_set_timezone(MessageFormatter_object *mfo,
   }
 }
 
-U_CFUNC void umsg_format_helper(MessageFormatter_object *mfo,
+void umsg_format_helper(MessageFormatter_object *mfo,
 								HashTable *args,
 								UChar **formatted,
 								int32_t *formatted_len)
 {
-	int arg_count = zend_hash_num_elements(args);
+	const int arg_count = zend_hash_num_elements(args);
 	std::vector<Formattable> fargs;
 	std::vector<UnicodeString> farg_names;
 	MessageFormat *mf = (MessageFormat *)mfo->mf_data.umsgf;
@@ -407,9 +397,9 @@ U_CFUNC void umsg_format_helper(MessageFormatter_object *mfo,
 				continue;
 			}
 
-		   UChar temp[16];
-		   int32_t len = u_sprintf(temp, "%u", (uint32_t)num_index);
-		   key.append(temp, len);
+		   char temp[16];
+		   const int32_t len = slprintf(temp, sizeof(temp), "%u", (uint32_t)num_index);
+		   key.append(UnicodeString(temp, len, US_INV));
 
 		   storedArgType = (Formattable::Type*)zend_hash_index_find_ptr(types, num_index);
 		} else { //string; assumed to be in UTF-8
@@ -467,7 +457,7 @@ U_CFUNC void umsg_format_helper(MessageFormatter_object *mfo,
 				}
 			case Formattable::kDouble:
 				{
-					double d = zval_get_double(elem);
+					const double d = zval_get_double(elem);
 					formattable.setDouble(d);
 					break;
 				}
@@ -523,7 +513,7 @@ U_CFUNC void umsg_format_helper(MessageFormatter_object *mfo,
 				}
 			case Formattable::kDate:
 				{
-					double dd = intl_zval_to_millis(elem, &err);
+					const double dd = intl_zval_to_millis(elem, &err);
 					if (U_FAILURE(err.code)) {
 						char *message;
 						zend_string *u8key;
@@ -615,7 +605,7 @@ U_CFUNC void umsg_format_helper(MessageFormatter_object *mfo,
 
 #define cleanup_zvals() for(int j=i;j>=0;j--) { zval_ptr_dtor((*args)+i); }
 
-U_CFUNC void umsg_parse_helper(UMessageFormat *fmt, int *count, zval **args, UChar *source, int32_t source_len, UErrorCode *status)
+void umsg_parse_helper(UMessageFormat *fmt, int *count, zval **args, UChar *source, int32_t source_len, UErrorCode *status)
 {
     UnicodeString srcString(source, source_len);
     Formattable *fargs = ((const MessageFormat*)fmt)->parse(srcString, *count, *status);
@@ -649,7 +639,7 @@ U_CFUNC void umsg_parse_helper(UMessageFormat *fmt, int *count, zval **args, UCh
 
         case Formattable::kInt64:
             aInt64 = fargs[i].getInt64();
-			if(aInt64 > ZEND_LONG_MAX || aInt64 < -ZEND_LONG_MAX) {
+			if(aInt64 > ZEND_LONG_MAX || aInt64 < ZEND_LONG_MIN) {
 				ZVAL_DOUBLE(&(*args)[i], (double)aInt64);
 			} else {
 				ZVAL_LONG(&(*args)[i], (zend_long)aInt64);

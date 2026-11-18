@@ -8,7 +8,7 @@
    |                                                                      |
    | SPDX-License-Identifier: BSD-3-Clause                                |
    +----------------------------------------------------------------------+
-   | Authors: Niels Dossche <nielsdos@php.net>                            |
+   | Authors: Nora Dossche  <ndossche@php.net>                            |
    +----------------------------------------------------------------------+
 */
 
@@ -1226,18 +1226,18 @@ static int dom_xml_serializing_a_document_node(
 	/* 1. Let serialized document be an empty string.
 	 *    => We use the output buffer instead. */
 
-	xmlNodePtr child = node->children;
-	node->children = NULL;
-
 	/* https://github.com/w3c/DOM-Parsing/issues/50 */
 	TRY(xmlOutputBufferFlush(ctx->out));
-	TRY(xmlSaveDoc(ctx->ctxt, (xmlDocPtr) node));
+	/* To gain the xml declaration, use a shallow copy of the document with the children NULLed out.
+	 * Stream wrappers can access the real document, so we cannot modify that. */
+	xmlDoc declaration_doc = *(xmlDocPtr) node;
+	declaration_doc.children = declaration_doc.last = NULL;
+	TRY(xmlSaveDoc(ctx->ctxt, &declaration_doc));
 	TRY(xmlSaveFlush(ctx->ctxt));
-
-	node->children = child;
 
 	/* 2. For each child child of node, in tree order, run the XML serialization algorithm on the child passing along the provided arguments,
 	 *    and append the result to serialized document. */
+	xmlNodePtr child = node->children;
 	while (child != NULL) {
 		TRY(dom_xml_serialization_algorithm(ctx, namespace_prefix_map, child, namespace, prefix_index, indent, require_well_formed));
 		child = child->next;
@@ -1246,6 +1246,15 @@ static int dom_xml_serializing_a_document_node(
 	/* 3. Return the value of serialized document.
 	 *    => We use the output buffer instead. */
 	return 0;
+}
+
+static zend_always_inline bool dom_xml_serialize_check_stack_limit(void)
+{
+#ifdef ZEND_CHECK_STACK_LIMIT
+	return zend_call_stack_overflowed(EG(stack_limit));
+#else
+	return false;
+#endif
 }
 
 /* https://w3c.github.io/DOM-Parsing/#dfn-xml-serialization-algorithm */
@@ -1259,6 +1268,11 @@ static int dom_xml_serialization_algorithm(
 	bool require_well_formed
 )
 {
+	if (UNEXPECTED(dom_xml_serialize_check_stack_limit())) {
+		zend_throw_error(NULL, "Maximum call stack size reached. Infinite recursion?");
+		return -1;
+	}
+
 	/* If node's interface is: */
 	switch (node->type) {
 		case XML_ELEMENT_NODE:

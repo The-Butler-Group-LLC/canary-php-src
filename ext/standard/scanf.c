@@ -161,9 +161,9 @@ static char * BuildCharSet(CharSet *cset, char *format)
 		ch = end++;
 	}
 
-	cset->chars = (char *) safe_emalloc(sizeof(char), (end - format - 1), 0);
+	cset->chars = (char *) safe_emalloc((end - format - 1), sizeof(char), 0);
 	if (nranges > 0) {
-		cset->ranges = (struct Range *) safe_emalloc(sizeof(struct Range), nranges, 0);
+		cset->ranges = (struct Range *) safe_emalloc(nranges, sizeof(struct Range), 0);
 	} else {
 		cset->ranges = NULL;
 	}
@@ -317,7 +317,7 @@ PHPAPI int ValidateFormat(char *format, int numVars, int *totalSubs)
 	 * a variable is multiply assigned or left unassigned.
 	 */
 	if (numVars > nspace) {
-		nassign = (int*)safe_emalloc(sizeof(int), numVars, 0);
+		nassign = (int*)safe_emalloc(numVars, sizeof(int), 0);
 		nspace = numVars;
 	}
 	for (i = 0; i < nspace; i++) {
@@ -343,7 +343,7 @@ PHPAPI int ValidateFormat(char *format, int numVars, int *totalSubs)
 			goto xpgCheckDone;
 		}
 
-		if ( isdigit( (int)*ch ) ) {
+		if ( isdigit( (unsigned char)*ch ) ) {
 			/*
 			 * Check for an XPG3-style %n$ specification.  Note: there
 			 * must not be a mixture of XPG3 specs and non-XPG3 specs
@@ -654,9 +654,9 @@ PHPAPI int php_sscanf_internal( char *string, char *format,
 		/*
 		 * If we see whitespace in the format, skip whitespace in the string.
 		 */
-		if ( isspace( (int)*ch ) ) {
+		if ( isspace( (unsigned char)*ch ) ) {
 			sch = *string;
-			while ( isspace( (int)sch ) ) {
+			while ( isspace( (unsigned char)sch ) ) {
 				if (*string == '\0') {
 					goto done;
 				}
@@ -807,7 +807,7 @@ literal:
 		if (!(flags & SCAN_NOSKIP)) {
 			while (*string != '\0') {
 				sch = *string;
-				if (! isspace((int)sch) ) {
+				if (! isspace((unsigned char)sch) ) {
 					break;
 				}
 				string++;
@@ -833,7 +833,7 @@ literal:
 				end = string;
 				while (*end != '\0') {
 					sch = *end;
-					if ( isspace( (int)sch ) ) {
+					if ( isspace( (unsigned char)sch ) ) {
 						break;
 					}
 					end++;

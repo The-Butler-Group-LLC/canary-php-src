@@ -77,6 +77,13 @@ const CURLOPT_DNS_CACHE_TIMEOUT = UNKNOWN;
  * @cvalue CURLOPT_DNS_USE_GLOBAL_CACHE
  */
 const CURLOPT_DNS_USE_GLOBAL_CACHE = UNKNOWN;
+#if LIBCURL_VERSION_NUM >= 0x080800 /* Available since 8.8.0 */
+/**
+ * @var int
+ * @cvalue CURLOPT_ECH
+ */
+const CURLOPT_ECH = UNKNOWN;
+#endif
 /**
  * @var int
  * @cvalue CURLOPT_EGDSOCKET
@@ -143,6 +150,13 @@ const CURLOPT_FTP_USE_EPRT = UNKNOWN;
  * @cvalue CURLOPT_FTP_USE_EPSV
  */
 const CURLOPT_FTP_USE_EPSV = UNKNOWN;
+#if LIBCURL_VERSION_NUM >= 0x080200 /* Available since 8.2.0 */
+/**
+ * @var int
+ * @cvalue CURLOPT_HAPROXY_CLIENT_IP
+ */
+const CURLOPT_HAPROXY_CLIENT_IP = UNKNOWN;
+#endif
 /**
  * @var int
  * @cvalue CURLOPT_HEADER
@@ -343,6 +357,11 @@ const CURLOPT_RESUME_FROM = UNKNOWN;
  * @cvalue CURLOPT_RETURNTRANSFER
  */
 const CURLOPT_RETURNTRANSFER = UNKNOWN;
+/**
+ * @var int
+ * @cvalue CURLOPT_SEEKFUNCTION
+ */
+const CURLOPT_SEEKFUNCTION = UNKNOWN;
 /**
  * @var int
  * @cvalue CURLOPT_SHARE
@@ -1378,6 +1397,13 @@ const CURLOPT_FTP_RESPONSE_TIMEOUT = UNKNOWN;
  * @cvalue CURLOPT_SERVER_RESPONSE_TIMEOUT
  */
 const CURLOPT_SERVER_RESPONSE_TIMEOUT = UNKNOWN;
+#if LIBCURL_VERSION_NUM >= 0x080600 /* Available since 8.6.0 */
+/**
+ * @var int
+ * @cvalue CURLOPT_SERVER_RESPONSE_TIMEOUT_MS
+ */
+const CURLOPT_SERVER_RESPONSE_TIMEOUT_MS = UNKNOWN;
+#endif
 /**
  * @var int
  * @cvalue CURLOPT_IPRESOLVE
@@ -1785,9 +1811,29 @@ const CURLPAUSE_SEND = UNKNOWN;
 const CURLPAUSE_SEND_CONT = UNKNOWN;
 /**
  * @var int
+ * @cvalue CURL_READFUNC_ABORT
+ */
+const CURL_READFUNC_ABORT = UNKNOWN;
+/**
+ * @var int
  * @cvalue CURL_READFUNC_PAUSE
  */
 const CURL_READFUNC_PAUSE = UNKNOWN;
+/**
+ * @var int
+ * @cvalue CURL_SEEKFUNC_OK
+ */
+const CURL_SEEKFUNC_OK = UNKNOWN;
+/**
+ * @var int
+ * @cvalue CURL_SEEKFUNC_FAIL
+ */
+const CURL_SEEKFUNC_FAIL = UNKNOWN;
+/**
+ * @var int
+ * @cvalue CURL_SEEKFUNC_CANTSEEK
+ */
+const CURL_SEEKFUNC_CANTSEEK = UNKNOWN;
 /**
  * @var int
  * @cvalue CURL_WRITEFUNC_PAUSE
@@ -3117,6 +3163,13 @@ const CURLINFO_POSTTRANSFER_TIME_T = UNKNOWN;
  */
 const CURLINFO_CONN_ID = UNKNOWN;
 #endif
+#if LIBCURL_VERSION_NUM >= 0x081400 /* Available since 8.20.0 */
+/**
+ * @var int
+ * @cvalue CURLINFO_SIZE_DELIVERED
+ */
+const CURLINFO_SIZE_DELIVERED = UNKNOWN;
+#endif
 /**
  * @var int
  * @cvalue CURLOPT_DISALLOW_USERNAME_IN_URL
@@ -3247,7 +3300,12 @@ const CURLSSLOPT_NO_PARTIALCHAIN = UNKNOWN;
 #if LIBCURL_VERSION_NUM >= 0x074500 /* Available since 7.69.0 */
 /**
  * @var int
- * @cvalue CURLOPT_MAIL_RCPT_ALLLOWFAILS
+ * @cvalue CURLOPT_MAIL_RCPT_ALLOWFAILS
+ */
+const CURLOPT_MAIL_RCPT_ALLOWFAILS = UNKNOWN;
+/**
+ * @var int
+ * @cvalue CURLOPT_MAIL_RCPT_ALLOWFAILS
  */
 const CURLOPT_MAIL_RCPT_ALLLOWFAILS = UNKNOWN;
 #endif

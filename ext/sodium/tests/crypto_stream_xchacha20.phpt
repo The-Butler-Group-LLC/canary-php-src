@@ -53,27 +53,32 @@ var_dump($stream7_unified === $stream7_concat);
 try {
     sodium_crypto_stream_xchacha20(-1, $nonce, $key);
 } catch (SodiumException $ex) {
-    echo $ex->getMessage(), "\n";
+    echo $ex::class, ': ', $ex->getMessage(), "\n";
 }
 try {
     sodium_crypto_stream_xchacha20($len, substr($nonce, 1), $key);
 } catch (SodiumException $ex) {
-    echo $ex->getMessage(), "\n";
+    echo $ex::class, ': ', $ex->getMessage(), "\n";
 }
 try {
     sodium_crypto_stream_xchacha20($len, $nonce, substr($key, 1));
 } catch (SodiumException $ex) {
-    echo $ex->getMessage(), "\n";
+    echo $ex::class, ': ', $ex->getMessage(), "\n";
 }
 try {
     sodium_crypto_stream_xchacha20_xor($stream, substr($nonce, 1), $key);
 } catch (SodiumException $ex) {
-    echo $ex->getMessage(), "\n";
+    echo $ex::class, ': ', $ex->getMessage(), "\n";
 }
 try {
     sodium_crypto_stream_xchacha20_xor($stream, $nonce, substr($key, 1));
 } catch (SodiumException $ex) {
-    echo $ex->getMessage(), "\n";
+    echo $ex::class, ': ', $ex->getMessage(), "\n";
+}
+try {
+    sodium_crypto_stream_xchacha20_xor_ic($stream, $nonce, 0, substr($key, 1));
+} catch (Throwable $ex) {
+    echo $ex::class, ': ', $ex->getMessage(), "\n";
 }
 
 ?>
@@ -89,8 +94,9 @@ bool(true)
 bool(true)
 int(128)
 bool(true)
-sodium_crypto_stream_xchacha20(): Argument #1 ($length) must be greater than 0
-sodium_crypto_stream_xchacha20(): Argument #2 ($nonce) must be SODIUM_CRYPTO_STREAM_XCHACHA20_NONCEBYTES bytes long
-sodium_crypto_stream_xchacha20(): Argument #3 ($key) must be SODIUM_CRYPTO_STREAM_XCHACHA20_KEYBYTES bytes long
-sodium_crypto_stream_xchacha20_xor(): Argument #2 ($nonce) must be SODIUM_CRYPTO_STREAM_XCHACHA20_NONCEBYTES bytes long
-sodium_crypto_stream_xchacha20_xor(): Argument #3 ($key) must be SODIUM_CRYPTO_STREAM_XCHACHA20_KEYBYTES bytes long
+SodiumException: sodium_crypto_stream_xchacha20(): Argument #1 ($length) must be greater than 0
+SodiumException: sodium_crypto_stream_xchacha20(): Argument #2 ($nonce) must be SODIUM_CRYPTO_STREAM_XCHACHA20_NONCEBYTES bytes long
+SodiumException: sodium_crypto_stream_xchacha20(): Argument #3 ($key) must be SODIUM_CRYPTO_STREAM_XCHACHA20_KEYBYTES bytes long
+SodiumException: sodium_crypto_stream_xchacha20_xor(): Argument #2 ($nonce) must be SODIUM_CRYPTO_STREAM_XCHACHA20_NONCEBYTES bytes long
+SodiumException: sodium_crypto_stream_xchacha20_xor(): Argument #3 ($key) must be SODIUM_CRYPTO_STREAM_XCHACHA20_KEYBYTES bytes long
+SodiumException: sodium_crypto_stream_xchacha20_xor_ic(): Argument #4 ($key) must be SODIUM_CRYPTO_STREAM_XCHACHA20_KEYBYTES bytes long

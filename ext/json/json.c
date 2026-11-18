@@ -33,10 +33,9 @@ PHP_JSON_API zend_class_entry *php_json_exception_ce;
 
 PHP_JSON_API ZEND_DECLARE_MODULE_GLOBALS(json)
 
-static int php_json_implement_json_serializable(zend_class_entry *interface, zend_class_entry *class_type)
+static void php_json_implement_json_serializable(zend_class_entry *interface, zend_class_entry *class_type)
 {
 	class_type->ce_flags |= ZEND_ACC_USE_GUARDS;
-	return SUCCESS;
 }
 
 /* {{{ MINIT */
@@ -60,18 +59,14 @@ static PHP_GINIT_FUNCTION(json)
 	ZEND_TSRMLS_CACHE_UPDATE();
 #endif
 	json_globals->encoder_depth = 0;
-	json_globals->error_code = 0;
-	json_globals->error_line = 0;
-	json_globals->error_column = 0;
+	php_json_error_details_clear(&json_globals->error_details);
 	json_globals->encode_max_depth = PHP_JSON_PARSER_DEFAULT_DEPTH;
 }
 /* }}} */
 
 static PHP_RINIT_FUNCTION(json)
 {
-	JSON_G(error_code) = 0;
-	JSON_G(error_line) = 0;
-	JSON_G(error_column) = 0;
+	php_json_error_details_clear(&JSON_G(error_details));
 	return SUCCESS;
 }
 
@@ -134,7 +129,11 @@ PHP_JSON_API zend_result php_json_encode_ex(smart_str *buf, zval *val, int optio
 	encoder.max_depth = depth;
 
 	return_code = php_json_encode_zval(buf, val, options, &encoder);
-	JSON_G(error_code) = encoder.error_code;
+	JSON_G(error_details) = (php_json_error_details){
+		.code = encoder.error_code,
+		.line = 0,
+		.column = 0,
+	};
 
 	return return_code;
 }
@@ -179,14 +178,14 @@ static const char *php_json_get_error_msg(php_json_error_code error_code) /* {{{
 }
 /* }}} */
 
-static zend_string *php_json_get_error_msg_with_location(php_json_error_code error_code, size_t line, size_t column) /* {{{ */
+static zend_string *php_json_get_error_msg_with_location(const php_json_error_details *details) /* {{{ */
 {
-	const char *base_msg = php_json_get_error_msg(error_code);
-	
-	if (line > 0 && column > 0) {
-		return zend_strpprintf(0, "%s near location %zu:%zu", base_msg, line, column);
+	const char *base_msg = php_json_get_error_msg(details->code);
+
+	if (details->line > 0 && details->column > 0) {
+		return zend_strpprintf(0, "%s near location %" PRIu64 ":%" PRIu64, base_msg, details->line, details->column);
 	}
-	
+
 	return zend_string_init(base_msg, strlen(base_msg), 0);
 }
 /* }}} */
@@ -198,17 +197,14 @@ PHP_JSON_API zend_result php_json_decode_ex(zval *return_value, const char *str,
 	php_json_parser_init(&parser, return_value, str, str_len, (int)options, (int)depth);
 
 	if (php_json_yyparse(&parser)) {
-		php_json_error_code error_code = php_json_parser_error_code(&parser);
-		size_t error_line = php_json_parser_error_line(&parser);
-		size_t error_column = php_json_parser_error_column(&parser);
+		php_json_error_details details;
+		php_json_parser_error_details(&parser, &details);
 
 		if (!(options & PHP_JSON_THROW_ON_ERROR)) {
-			JSON_G(error_code) = error_code;
-			JSON_G(error_line) = error_line;
-			JSON_G(error_column) = error_column;
+			JSON_G(error_details) = details;
 		} else {
-			zend_string *error_msg = php_json_get_error_msg_with_location(error_code, error_line, error_column);
-			zend_throw_exception(php_json_exception_ce, ZSTR_VAL(error_msg), error_code);
+			zend_string *error_msg = php_json_get_error_msg_with_location(&details);
+			zend_throw_exception(php_json_exception_ce, ZSTR_VAL(error_msg), details.code);
 			zend_string_release(error_msg);
 		}
 		RETVAL_NULL();
@@ -228,13 +224,8 @@ PHP_JSON_API bool php_json_validate_ex(const char *str, size_t str_len, zend_lon
 	php_json_parser_init_ex(&parser, &tmp, str, str_len, (int)options, (int)depth, parser_validate_methods);
 
 	if (php_json_yyparse(&parser)) {
-		php_json_error_code error_code = php_json_parser_error_code(&parser);
-		size_t error_line = php_json_parser_error_line(&parser);
-		size_t error_column = php_json_parser_error_column(&parser);
+		php_json_parser_error_details(&parser, &JSON_G(error_details));
 
-		JSON_G(error_code) = error_code;
-		JSON_G(error_line) = error_line;
-		JSON_G(error_column) = error_column;
 		return false;
 	}
 
@@ -258,12 +249,22 @@ PHP_FUNCTION(json_encode)
 		Z_PARAM_LONG(depth)
 	ZEND_PARSE_PARAMETERS_END();
 
+	if (ZEND_LONG_EXCEEDS_INT(depth)) {
+		zend_argument_value_error(3, "must be between %d and %d", INT_MIN, INT_MAX);
+		RETURN_THROWS();
+	}
+
 	php_json_encode_init(&encoder);
 	encoder.max_depth = (int)depth;
 	php_json_encode_zval(&buf, parameter, (int)options, &encoder);
 
 	if (!(options & PHP_JSON_THROW_ON_ERROR) || (options & PHP_JSON_PARTIAL_OUTPUT_ON_ERROR)) {
-		JSON_G(error_code) = encoder.error_code;
+		JSON_G(error_details) = (php_json_error_details){
+			.code = encoder.error_code,
+			.line = 0,
+			.column = 0,
+		};
+
 		if (encoder.error_code != PHP_JSON_ERROR_NONE && !(options & PHP_JSON_PARTIAL_OUTPUT_ON_ERROR)) {
 			smart_str_free(&buf);
 			RETURN_FALSE;
@@ -299,16 +300,16 @@ PHP_FUNCTION(json_decode)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (!(options & PHP_JSON_THROW_ON_ERROR)) {
-		JSON_G(error_code) = PHP_JSON_ERROR_NONE;
-		JSON_G(error_line) = 0;
-		JSON_G(error_column) = 0;
+		php_json_error_details_clear(&JSON_G(error_details));
 	}
 
 	if (!str_len) {
 		if (!(options & PHP_JSON_THROW_ON_ERROR)) {
-			JSON_G(error_code) = PHP_JSON_ERROR_SYNTAX;
-			JSON_G(error_line) = 0;
-			JSON_G(error_column) = 0;
+			JSON_G(error_details) = (php_json_error_details){
+				.code = PHP_JSON_ERROR_SYNTAX,
+				.line = 0,
+				.column = 0,
+			};
 		} else {
 			zend_throw_exception(php_json_exception_ce, php_json_get_error_msg(PHP_JSON_ERROR_SYNTAX), PHP_JSON_ERROR_SYNTAX);
 		}
@@ -321,7 +322,7 @@ PHP_FUNCTION(json_decode)
 	}
 
 	if (depth > INT_MAX) {
-		zend_argument_value_error(3, "must be less than %d", INT_MAX);
+		zend_argument_value_error(3, "must be less than or equal to %d", INT_MAX);
 		RETURN_THROWS();
 	}
 
@@ -360,15 +361,16 @@ PHP_FUNCTION(json_validate)
 	}
 
 	if (!str_len) {
-		JSON_G(error_code) = PHP_JSON_ERROR_SYNTAX;
-		JSON_G(error_line) = 0;
-		JSON_G(error_column) = 0;
+		JSON_G(error_details) = (php_json_error_details){
+			.code = PHP_JSON_ERROR_SYNTAX,
+			.line = 0,
+			.column = 0,
+		};
+
 		RETURN_FALSE;
 	}
 
-	JSON_G(error_code) = PHP_JSON_ERROR_NONE;
-	JSON_G(error_line) = 0;
-	JSON_G(error_column) = 0;
+	php_json_error_details_clear(&JSON_G(error_details));
 
 	if (depth <= 0) {
 		zend_argument_value_error(2, "must be greater than 0");
@@ -376,7 +378,7 @@ PHP_FUNCTION(json_validate)
 	}
 
 	if (depth > INT_MAX) {
-		zend_argument_value_error(2, "must be less than %d", INT_MAX);
+		zend_argument_value_error(2, "must be less than or equal to %d", INT_MAX);
 		RETURN_THROWS();
 	}
 
@@ -389,7 +391,7 @@ PHP_FUNCTION(json_last_error)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	RETURN_LONG(JSON_G(error_code));
+	RETURN_LONG(JSON_G(error_details).code);
 }
 /* }}} */
 
@@ -398,10 +400,6 @@ PHP_FUNCTION(json_last_error_msg)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	RETVAL_STR(php_json_get_error_msg_with_location(
-		JSON_G(error_code),
-		JSON_G(error_line),
-		JSON_G(error_column)
-	));
+	RETURN_STR(php_json_get_error_msg_with_location(&JSON_G(error_details)));
 }
 /* }}} */

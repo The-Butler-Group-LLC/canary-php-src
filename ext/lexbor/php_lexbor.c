@@ -8,7 +8,7 @@
    |                                                                      |
    | SPDX-License-Identifier: BSD-3-Clause                                |
    +----------------------------------------------------------------------+
-   | Authors: Niels Dossche <nielsdos@php.net>                            |
+   | Authors: Nora Dossche  <ndossche@php.net>                            |
    |          Mate Kocsis <kocsismate@php.net>                            |
    +----------------------------------------------------------------------+
 */
@@ -30,17 +30,17 @@
 
 static void *php_lexbor_malloc(size_t size)
 {
-	return emalloc(size);
+	return femalloc(size, /* fallible */ true);
 }
 
 static void *php_lexbor_realloc(void *dst, size_t size)
 {
-	return erealloc(dst, size);
+	return safe_ferealloc(dst, 1, size, 0, /* fallible */ true);
 }
 
 static void *php_lexbor_calloc(size_t num, size_t size)
 {
-	return ecalloc(num, size);
+	return fecalloc(num, size, /* fallible */ true);
 }
 
 static void php_lexbor_free(void *ptr)

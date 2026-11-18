@@ -38,12 +38,12 @@ typedef struct {
 	// current text
 	zval text;
 
+	zend_string *compiled_rules;
+
 	zend_object	zo;
 } BreakIterator_object;
 
-static inline BreakIterator_object *php_intl_breakiterator_fetch_object(zend_object *obj) {
-	return (BreakIterator_object *)((char*)(obj) - offsetof(BreakIterator_object, zo));
-}
+#define php_intl_breakiterator_fetch_object(obj) ZEND_CONTAINER_OF(obj, BreakIterator_object, zo)
 #define Z_INTL_BREAKITERATOR_P(zv) php_intl_breakiterator_fetch_object(Z_OBJ_P(zv))
 
 #define BREAKITER_ERROR(bio)		(bio)->err
@@ -64,13 +64,13 @@ static inline BreakIterator_object *php_intl_breakiterator_fetch_object(zend_obj
 
 void breakiterator_object_create(zval *object, BreakIterator *break_iter, int brand_new);
 
-void breakiterator_object_construct(zval *object, BreakIterator *break_iter);
-
+BEGIN_EXTERN_C()
 void breakiterator_register_BreakIterator_class(void);
 
 extern zend_class_entry *BreakIterator_ce_ptr,
 						*RuleBasedBreakIterator_ce_ptr;
 
 extern zend_object_handlers BreakIterator_handlers;
+END_EXTERN_C()
 
 #endif /* #ifndef BREAKITERATOR_CLASS_H */

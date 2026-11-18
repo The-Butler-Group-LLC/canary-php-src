@@ -17,7 +17,6 @@
 #include <config.h>
 #endif
 
-#include <math.h>
 #include "php_hash.h"
 #include "ext/standard/info.h"
 #include "ext/standard/file.h"
@@ -27,17 +26,9 @@
 #include "zend_exceptions.h"
 #include "zend_interfaces.h"
 #include "zend_smart_str.h"
+#include <stdalign.h>
 
 #include "hash_arginfo.h"
-
-#ifdef PHP_WIN32
-# define __alignof__ __alignof
-#else
-# ifndef HAVE_ALIGNOF
-#  include <stddef.h>
-#  define __alignof__(type) offsetof (struct { char c; type member;}, member)
-# endif
-#endif
 
 static HashTable php_hash_hashtable;
 zend_class_entry *php_hashcontext_ce;
@@ -102,9 +93,7 @@ static struct mhash_bc_entry mhash_to_hash[MHASH_NUM_ALGOS] = {
 
 PHP_HASH_API const php_hash_ops *php_hash_fetch_ops(zend_string *algo) /* {{{ */
 {
-	zend_string *lower = zend_string_tolower(algo);
-	const php_hash_ops *ops = zend_hash_find_ptr(&php_hash_hashtable, lower);
-	zend_string_release(lower);
+	const php_hash_ops *ops = zend_hash_find_ptr_lc(&php_hash_hashtable, algo);
 
 	return ops;
 }
@@ -141,16 +130,16 @@ static size_t parse_serialize_spec(
 	/* parse size */
 	if (*spec == 's' || *spec == 'S') {
 		*sz = 2;
-		alignment = __alignof__(uint16_t); /* usually 2 */
+		alignment = alignof(uint16_t); /* usually 2 */
 	} else if (*spec == 'l' || *spec == 'L') {
 		*sz = 4;
-		alignment = __alignof__(uint32_t); /* usually 4 */
+		alignment = alignof(uint32_t); /* usually 4 */
 	} else if (*spec == 'q' || *spec == 'Q') {
 		*sz = 8;
-		alignment = __alignof__(uint64_t); /* usually 8 */
+		alignment = alignof(uint64_t); /* usually 8 */
 	} else if (*spec == 'i' || *spec == 'I') {
 		*sz = sizeof(int);
-		alignment = __alignof__(int);      /* usually 4 */
+		alignment = alignof(int);      /* usually 4 */
 	} else {
 		ZEND_ASSERT(*spec == 'b' || *spec == 'B');
 		*sz = 1;
@@ -364,7 +353,7 @@ static void php_hash_do_hash(
 	}
 	if (isfilename) {
 		if (zend_char_has_nul_byte(data, data_len)) {
-			zend_argument_value_error(1, "must not contain any null bytes");
+			zend_argument_value_error(2, "must not contain any null bytes");
 			RETURN_THROWS();
 		}
 		stream = php_stream_open_wrapper_ex(data, "rb", REPORT_ERRORS, NULL, FG(default_context));
@@ -386,7 +375,7 @@ static void php_hash_do_hash(
 		}
 		php_stream_close(stream);
 		if (n < 0) {
-			efree(context);
+			php_hash_free_context(ops, context);
 			RETURN_FALSE;
 		}
 	} else {
@@ -395,7 +384,7 @@ static void php_hash_do_hash(
 
 	digest = zend_string_alloc(ops->digest_size, 0);
 	ops->hash_final((unsigned char *) ZSTR_VAL(digest), context);
-	efree(context);
+	php_hash_free_context(ops, context);
 
 	if (raw_output) {
 		ZSTR_VAL(digest)[ops->digest_size] = 0;
@@ -403,7 +392,7 @@ static void php_hash_do_hash(
 	} else {
 		zend_string *hex_digest = zend_string_safe_alloc(ops->digest_size, 2, 0, 0);
 
-		php_hash_bin2hex(ZSTR_VAL(hex_digest), (unsigned char *) ZSTR_VAL(digest), ops->digest_size);
+		zend_bin2hex(ZSTR_VAL(hex_digest), (unsigned char *) ZSTR_VAL(digest), ops->digest_size);
 		ZSTR_VAL(hex_digest)[2 * ops->digest_size] = 0;
 		zend_string_efree(digest);
 		RETURN_NEW_STR(hex_digest);
@@ -534,7 +523,7 @@ static void php_hash_do_hash_hmac(
 		}
 		php_stream_close(stream);
 		if (n < 0) {
-			efree(context);
+			php_hash_free_context(ops, context);
 			efree(K);
 			zend_string_efree(digest);
 			RETURN_FALSE;
@@ -552,7 +541,7 @@ static void php_hash_do_hash_hmac(
 	/* Zero the key */
 	ZEND_SECURE_ZERO(K, ops->block_size);
 	efree(K);
-	efree(context);
+	php_hash_free_context(ops, context);
 
 	if (raw_output) {
 		ZSTR_VAL(digest)[ops->digest_size] = 0;
@@ -560,7 +549,7 @@ static void php_hash_do_hash_hmac(
 	} else {
 		zend_string *hex_digest = zend_string_safe_alloc(ops->digest_size, 2, 0, 0);
 
-		php_hash_bin2hex(ZSTR_VAL(hex_digest), (unsigned char *) ZSTR_VAL(digest), ops->digest_size);
+		zend_bin2hex(ZSTR_VAL(hex_digest), (unsigned char *) ZSTR_VAL(digest), ops->digest_size);
 		ZSTR_VAL(hex_digest)[2 * ops->digest_size] = 0;
 		zend_string_efree(digest);
 		RETURN_NEW_STR(hex_digest);
@@ -813,7 +802,7 @@ PHP_FUNCTION(hash_final)
 	ZSTR_VAL(digest)[digest_len] = 0;
 
 	/* Invalidate the object from further use */
-	efree(hash->context);
+	php_hash_free_context(hash->ops, hash->context);
 	hash->context = NULL;
 
 	if (raw_output) {
@@ -821,7 +810,7 @@ PHP_FUNCTION(hash_final)
 	} else {
 		zend_string *hex_digest = zend_string_safe_alloc(digest_len, 2, 0, 0);
 
-		php_hash_bin2hex(ZSTR_VAL(hex_digest), (unsigned char *) ZSTR_VAL(digest), digest_len);
+		zend_bin2hex(ZSTR_VAL(hex_digest), (unsigned char *) ZSTR_VAL(digest), digest_len);
 		ZSTR_VAL(hex_digest)[2 * digest_len] = 0;
 		zend_string_efree(digest);
 		RETURN_NEW_STR(hex_digest);
@@ -967,7 +956,7 @@ PHP_FUNCTION(hash_hkdf)
 	ZEND_SECURE_ZERO(digest, ops->digest_size);
 	ZEND_SECURE_ZERO(prk, ops->digest_size);
 	efree(K);
-	efree(context);
+	php_hash_free_context(ops, context);
 	efree(prk);
 	efree(digest);
 	ZSTR_VAL(returnval)[length] = 0;
@@ -1035,14 +1024,14 @@ PHP_FUNCTION(hash_pbkdf2)
 	}
 	digest_length = length;
 	if (!raw_output) {
-		digest_length = (zend_long) ceil((float) length / 2.0);
+		digest_length = length / 2 + (length % 2);
 	}
 
-	loops = (zend_long) ceil((float) digest_length / (float) ops->digest_size);
+	loops = (digest_length - 1) / ops->digest_size + 1;
 
 	result = safe_emalloc(loops, ops->digest_size, 0);
 
-	computed_salt = safe_emalloc(salt_len, 1, 4);
+	computed_salt = safe_emalloc(salt_len, sizeof(unsigned char), 4);
 	memcpy(computed_salt, (unsigned char *) salt, salt_len);
 
 	for (i = 1; i <= loops; i++) {
@@ -1083,7 +1072,7 @@ PHP_FUNCTION(hash_pbkdf2)
 	efree(K1);
 	efree(K2);
 	efree(computed_salt);
-	efree(context);
+	php_hash_free_context(ops, context);
 	efree(digest);
 	efree(temp);
 
@@ -1091,7 +1080,7 @@ PHP_FUNCTION(hash_pbkdf2)
 	if (raw_output) {
 		memcpy(ZSTR_VAL(returnval), result, length);
 	} else {
-		php_hash_bin2hex(ZSTR_VAL(returnval), result, digest_length);
+		zend_bin2hex(ZSTR_VAL(returnval), result, digest_length);
 	}
 	ZSTR_VAL(returnval)[length] = 0;
 	efree(result);
@@ -1112,12 +1101,12 @@ PHP_FUNCTION(hash_equals)
 
 	/* We only allow comparing string to prevent unexpected results. */
 	if (Z_TYPE_P(known_zval) != IS_STRING) {
-		zend_argument_type_error(1, "must be of type string, %s given", zend_zval_value_name(known_zval));
+		zend_wrong_parameter_type_error(1, Z_EXPECTED_STRING, known_zval);
 		RETURN_THROWS();
 	}
 
 	if (Z_TYPE_P(user_zval) != IS_STRING) {
-		zend_argument_type_error(2, "must be of type string, %s given", zend_zval_value_name(user_zval));
+		zend_wrong_parameter_type_error(2, Z_EXPECTED_STRING, user_zval);
 		RETURN_THROWS();
 	}
 
@@ -1296,11 +1285,17 @@ PHP_FUNCTION(mhash_keygen_s2k)
 		RETURN_THROWS();
 	}
 
-	bytes = (int)l_bytes;
-	if (bytes <= 0){
+	if (l_bytes <= 0) {
 		zend_argument_value_error(4, "must be a greater than 0");
 		RETURN_THROWS();
 	}
+
+	if (ZEND_LONG_INT_OVFL(l_bytes)) {
+		zend_argument_value_error(4, "must be less than or equal to %d", INT_MAX);
+		RETURN_THROWS();
+	}
+
+	bytes = (int)l_bytes;
 
 	salt_len = MIN(salt_len, SALT_SIZE);
 
@@ -1330,7 +1325,7 @@ PHP_FUNCTION(mhash_keygen_s2k)
 				context = php_hash_alloc_context(ops);
 				ops->hash_init(context, NULL);
 
-				key = ecalloc(1, times * block_size);
+				key = ecalloc(times, block_size);
 				digest = emalloc(ops->digest_size + 1);
 
 				for (i = 0; i < times; i++) {
@@ -1348,7 +1343,7 @@ PHP_FUNCTION(mhash_keygen_s2k)
 				RETVAL_STRINGL(key, bytes);
 				ZEND_SECURE_ZERO(key, bytes);
 				efree(digest);
-				efree(context);
+				php_hash_free_context(ops, context);
 				efree(key);
 			}
 		}
@@ -1378,7 +1373,7 @@ static void php_hashcontext_dtor(zend_object *obj) {
 	php_hashcontext_object *hash = php_hashcontext_from_object(obj);
 
 	if (hash->context) {
-		efree(hash->context);
+		php_hash_free_context(hash->ops, hash->context);
 		hash->context = NULL;
 	}
 
@@ -1397,7 +1392,7 @@ static void php_hashcontext_free(zend_object *obj) {
 
 /* {{{ php_hashcontext_clone */
 static zend_object *php_hashcontext_clone(zend_object *zobj) {
-	php_hashcontext_object *oldobj = php_hashcontext_from_object(zobj);
+	const php_hashcontext_object *oldobj = php_hashcontext_from_object(zobj);
 	zend_object *znew = php_hashcontext_create(zobj->ce);
 	php_hashcontext_object *newobj = php_hashcontext_from_object(znew);
 
@@ -1414,7 +1409,7 @@ static zend_object *php_hashcontext_clone(zend_object *zobj) {
 	newobj->ops->hash_init(newobj->context, NULL);
 
 	if (SUCCESS != newobj->ops->hash_copy(newobj->ops, oldobj->context, newobj->context)) {
-		efree(newobj->context);
+		php_hash_free_context(newobj->ops, newobj->context);
 		newobj->context = NULL;
 		return znew;
 	}

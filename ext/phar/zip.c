@@ -39,17 +39,28 @@ static inline void phar_write_16(char buffer[2], uint32_t value)
 # define PHAR_SET_32(var, value) phar_write_32(var, (uint32_t) (value));
 # define PHAR_SET_16(var, value) phar_write_16(var, (uint16_t) (value));
 
-static zend_result phar_zip_process_extra(php_stream *fp, phar_entry_info *entry, uint16_t len) /* {{{ */
+static zend_result phar_zip_process_extra(php_stream *fp, phar_entry_info *entry, uint16_t extra_len) /* {{{ */
 {
 	union {
 		phar_zip_extra_field_header header;
 		phar_zip_unix3 unix3;
 		phar_zip_unix_time time;
 	} h;
+	size_t len = extra_len;
 	size_t read;
 
-	do {
+	while (len) {
+		size_t header_size;
+
+		if (len < sizeof(h.header)) {
+			return FAILURE;
+		}
 		if (sizeof(h.header) != php_stream_read(fp, (char *) &h.header, sizeof(h.header))) {
+			return FAILURE;
+		}
+		len -= sizeof(h.header);
+		header_size = PHAR_GET_16(h.header.size);
+		if (header_size > len) {
 			return FAILURE;
 		}
 
@@ -60,7 +71,6 @@ static zend_result phar_zip_process_extra(php_stream *fp, phar_entry_info *entry
 			 * We only store the modification time in the entry, so only read that.
 			 */
 			const size_t min_size = 5;
-			uint16_t header_size = PHAR_GET_16(h.header.size);
 			if (header_size >= min_size) {
 				read = php_stream_read(fp, &h.time.flags, min_size);
 				if (read != min_size) {
@@ -71,12 +81,11 @@ static zend_result phar_zip_process_extra(php_stream *fp, phar_entry_info *entry
 					entry->timestamp = PHAR_GET_32(h.time.time);
 				}
 
-				len -= header_size + 4;
-
 				/* Consume remaining bytes */
-				if (header_size != read) {
-					php_stream_seek(fp, header_size - read, SEEK_CUR);
+				if (header_size != read && -1 == php_stream_seek(fp, header_size - read, SEEK_CUR)) {
+					return FAILURE;
 				}
+				len -= header_size;
 				continue;
 			}
 			/* Fallthrough to next if to skip header */
@@ -84,23 +93,36 @@ static zend_result phar_zip_process_extra(php_stream *fp, phar_entry_info *entry
 
 		if (h.header.tag[0] != 'n' || h.header.tag[1] != 'u') {
 			/* skip to next header */
-			php_stream_seek(fp, PHAR_GET_16(h.header.size), SEEK_CUR);
-			len -= PHAR_GET_16(h.header.size) + 4;
+			if (header_size && -1 == php_stream_seek(fp, header_size, SEEK_CUR)) {
+				return FAILURE;
+			}
+			len -= header_size;
 			continue;
 		}
 
 		/* unix3 header found */
-		read = php_stream_read(fp, (char *) &(h.unix3.crc32), sizeof(h.unix3) - sizeof(h.header));
-		len -= read + 4;
-
-		if (sizeof(h.unix3) - sizeof(h.header) != read) {
+		size_t unix3_size = sizeof(h.unix3) - sizeof(h.header);
+		size_t field_size = header_size;
+		if (field_size == unix3_size - sizeof(h.unix3.crc32)) {
+			/* Some archives omit the CRC32 from the unix3 size field. */
+			field_size = unix3_size;
+		}
+		if (field_size < unix3_size || field_size > len) {
 			return FAILURE;
 		}
 
-		if (PHAR_GET_16(h.unix3.size) > sizeof(h.unix3) - 4) {
-			/* skip symlink filename - we may add this support in later */
-			php_stream_seek(fp, PHAR_GET_16(h.unix3.size) - sizeof(h.unix3.size), SEEK_CUR);
+		read = php_stream_read(fp, (char *) &(h.unix3.crc32), unix3_size);
+		if (unix3_size != read) {
+			return FAILURE;
 		}
+
+		if (field_size > unix3_size) {
+			/* skip symlink filename - we may add this support in later */
+			if (-1 == php_stream_seek(fp, field_size - unix3_size, SEEK_CUR)) {
+				return FAILURE;
+			}
+		}
+		len -= field_size;
 
 		/* set permissions */
 		entry->flags &= PHAR_ENT_COMPRESSION_MASK;
@@ -111,7 +133,7 @@ static zend_result phar_zip_process_extra(php_stream *fp, phar_entry_info *entry
 			entry->flags |= PHAR_GET_16(h.unix3.perms) & PHAR_ENT_PERM_MASK;
 		}
 
-	} while (len);
+	}
 
 	return SUCCESS;
 }
@@ -224,8 +246,14 @@ static char *phar_find_eocd(const char *s, size_t n)
  * This is used by phar_open_from_fp to process a zip-based phar, but can be called
  * directly.
  */
-zend_result phar_parse_zipfile(php_stream *fp, const char *fname, size_t fname_len, const char *alias, size_t alias_len, phar_archive_data** pphar, char **error) /* {{{ */
-{
+zend_result phar_parse_zipfile(
+	php_stream *fp,
+	const char *fname,
+	size_t fname_len,
+	/* copyable & hash update */ zend_string *alias,
+	phar_archive_data** pphar,
+	char **error
+) {
 	phar_zip_dir_end locator;
 	char buf[sizeof(locator) + 65536];
 	zend_off_t size;
@@ -617,7 +645,6 @@ zend_result phar_parse_zipfile(php_stream *fp, const char *fname, size_t fname_l
 			zend_off_t restore_pos = php_stream_tell(fp);
 			php_stream_seek(fp, entry.offset, SEEK_SET);
 
-			mydata->alias_len = entry.uncompressed_filesize;
 			if (entry.flags & PHAR_ENT_COMPRESSED_GZ) {
 				filter = php_stream_filter_create("zlib.inflate", NULL, php_stream_is_persistent(fp));
 
@@ -704,6 +731,8 @@ zend_result phar_parse_zipfile(php_stream *fp, const char *fname, size_t fname_l
 				}
 			}
 
+			mydata->alias_len = entry.uncompressed_filesize;
+
 			/* return to central directory parsing */
 			php_stream_seek(fp, restore_pos, SEEK_SET);
 		}
@@ -760,8 +789,8 @@ zend_result phar_parse_zipfile(php_stream *fp, const char *fname, size_t fname_l
 
 		zend_hash_str_add_ptr(&(PHAR_G(phar_alias_map)), mydata->alias, mydata->alias_len, mydata);
 	} else {
-		if (alias_len) {
-			phar_archive_data *fd_ptr = zend_hash_str_find_ptr(&(PHAR_G(phar_alias_map)), alias, alias_len);
+		if (alias) {
+			phar_archive_data *fd_ptr = zend_hash_find_ptr(&(PHAR_G(phar_alias_map)), alias);
 			if (fd_ptr) {
 				if (SUCCESS != phar_free_alias(fd_ptr)) {
 					if (error) {
@@ -772,9 +801,9 @@ zend_result phar_parse_zipfile(php_stream *fp, const char *fname, size_t fname_l
 				}
 			}
 
-			zend_hash_str_add_ptr(&(PHAR_G(phar_alias_map)), alias, alias_len, mydata);
-			mydata->alias = pestrndup(alias, alias_len, mydata->is_persistent);
-			mydata->alias_len = alias_len;
+			zend_hash_add_ptr(&(PHAR_G(phar_alias_map)), alias, mydata);
+			mydata->alias = pestrndup(ZSTR_VAL(alias), ZSTR_LEN(alias), mydata->is_persistent);
+			mydata->alias_len = ZSTR_LEN(alias);
 		} else {
 			mydata->alias = pestrndup(ZSTR_VAL(mydata->fname), ZSTR_LEN(mydata->fname), mydata->is_persistent);
 			mydata->alias_len = fname_len;
@@ -794,10 +823,16 @@ zend_result phar_parse_zipfile(php_stream *fp, const char *fname, size_t fname_l
 /**
  * Create or open a zip-based phar for writing
  */
-ZEND_ATTRIBUTE_NONNULL_ARGS(1, 6, 7) zend_result phar_open_or_create_zip(zend_string *fname, const char *alias, size_t alias_len, bool is_data, uint32_t options, phar_archive_data** pphar, char **error) /* {{{ */
-{
+ZEND_ATTRIBUTE_NONNULL_ARGS(1, 5, 6) zend_result phar_open_or_create_zip(
+	zend_string *fname,
+	/* copyable & hash update */ zend_string *alias,
+	bool is_data,
+	uint32_t options,
+	phar_archive_data** pphar,
+	char **error
+) {
 	phar_archive_data *phar;
-	zend_result ret = phar_create_or_parse_filename(fname, alias, alias_len, is_data, options, &phar, error);
+	zend_result ret = phar_create_or_parse_filename(fname, alias, is_data, options, &phar, error);
 
 	if (FAILURE == ret) {
 		return FAILURE;
@@ -822,7 +857,6 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(1, 6, 7) zend_result phar_open_or_create_zip(zend_st
 
 	return FAILURE;
 }
-/* }}} */
 
 struct _phar_zip_pass {
 	php_stream *filefp;
@@ -902,7 +936,6 @@ static int phar_zip_changed_apply_int(phar_entry_info *entry, void *arg) /* {{{ 
 
 	/* do extra field for perms later */
 	if (entry->is_modified) {
-		php_stream_filter *filter;
 		php_stream *efp;
 
 		if (entry->is_dir) {
@@ -927,7 +960,7 @@ static int phar_zip_changed_apply_int(phar_entry_info *entry, void *arg) /* {{{ 
 		}
 
 		if (-1 == phar_seek_efp(entry, 0, SEEK_SET, 0, false)) {
-			spprintf(p->error, 0, "unable to seek to start of file \"%s\" to zip-based phar \"%s\"", ZSTR_VAL(entry->filename), ZSTR_VAL(entry->phar->fname));
+			spprintf(p->error, 0, "unable to seek to start of file \"%s\" while creating zip-based phar \"%s\"", ZSTR_VAL(entry->filename), ZSTR_VAL(entry->phar->fname));
 			return ZEND_HASH_APPLY_STOP;
 		}
 
@@ -948,7 +981,9 @@ static int phar_zip_changed_apply_int(phar_entry_info *entry, void *arg) /* {{{ 
 			goto not_compressed;
 		}
 
-		filter = php_stream_filter_create(phar_compress_filter(entry, false), NULL, 0);
+		const char *compression_filter_name = phar_get_compress_filter_name(entry);
+		ZEND_ASSERT(compression_filter_name && "Must have as this has a compression flag set");
+		php_stream_filter *filter = php_stream_filter_create(compression_filter_name, NULL, false);
 
 		if (!filter) {
 			if (entry->flags & PHAR_ENT_COMPRESSED_GZ) {
@@ -974,7 +1009,7 @@ static int phar_zip_changed_apply_int(phar_entry_info *entry, void *arg) /* {{{ 
 
 		if (-1 == phar_seek_efp(entry, 0, SEEK_SET, 0, false)) {
 			php_stream_filter_free(filter);
-			spprintf(p->error, 0, "unable to seek to start of file \"%s\" to zip-based phar \"%s\"", ZSTR_VAL(entry->filename), ZSTR_VAL(entry->phar->fname));
+			spprintf(p->error, 0, "unable to seek to start of file \"%s\" while creating zip-based phar \"%s\"", ZSTR_VAL(entry->filename), ZSTR_VAL(entry->phar->fname));
 			return ZEND_HASH_APPLY_STOP;
 		}
 
@@ -1117,7 +1152,7 @@ continue_dir:
 			}
 		}
 
-		if (!entry->is_dir && entry->compressed_filesize && SUCCESS != php_stream_copy_to_stream_ex(p->old, p->filefp, entry->compressed_filesize, NULL)) {
+		if (!entry->is_dir && entry->compressed_filesize && (!p->old || SUCCESS != php_stream_copy_to_stream_ex(p->old, p->filefp, entry->compressed_filesize, NULL))) {
 			spprintf(p->error, 0, "unable to copy contents of file \"%s\" while creating zip-based phar \"%s\"", ZSTR_VAL(entry->filename), ZSTR_VAL(entry->phar->fname));
 			return ZEND_HASH_APPLY_STOP;
 		}

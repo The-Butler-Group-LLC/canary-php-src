@@ -27,8 +27,10 @@
 
 #include "php.h"
 #include "ext/standard/info.h"
+#include "ext/standard/php_filestat.h"
 #include "php_signal.h"
 #include "php_ticks.h"
+#include "zend_exceptions.h"
 #include "zend_fibers.h"
 #include "main/php_main.h"
 
@@ -152,6 +154,7 @@ typedef psetid_t cpu_set_t;
 #include "Zend/zend_max_execution_timer.h"
 
 #include "pcntl_arginfo.h"
+#include "pcntl_decl.h"
 static zend_class_entry *QosClass_ce;
 
 ZEND_DECLARE_MODULE_GLOBALS(pcntl)
@@ -675,7 +678,11 @@ PHP_FUNCTION(pcntl_exec)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (args != NULL) {
-		// TODO Check array is a list?
+		if (!zend_array_is_list(Z_ARRVAL_P(args))) {
+			zend_argument_value_error(2, "must be a list array");
+			RETURN_THROWS();
+		}
+
 		/* Build argument list */
 		SEPARATE_ARRAY(args);
 		const HashTable *args_ht = Z_ARRVAL_P(args);
@@ -741,13 +748,10 @@ PHP_FUNCTION(pcntl_exec)
 				zend_string_addref(key);
 			}
 
-			/* Length of element + equal sign + length of key + null */
-			*pair = safe_emalloc(ZSTR_LEN(element_str) + 1, sizeof(char), ZSTR_LEN(key) + 1);
-			/* Copy key=element + final null byte into buffer */
-			memcpy(*pair, ZSTR_VAL(key), ZSTR_LEN(key));
-			(*pair)[ZSTR_LEN(key)] = '=';
-			/* Copy null byte */
-			memcpy(*pair + ZSTR_LEN(key) + 1, ZSTR_VAL(element_str), ZSTR_LEN(element_str) + 1);
+			*pair = zend_cstr_concat3(
+				ZSTR_VAL(key), ZSTR_LEN(key),
+				"=", 1,
+				ZSTR_VAL(element_str), ZSTR_LEN(element_str));
 
 			/* Cleanup */
 			zend_string_release_ex(key, false);
@@ -804,6 +808,25 @@ PHP_FUNCTION(pcntl_signal)
 		RETURN_THROWS();
 	}
 
+	if (Z_TYPE_P(handle) == IS_LONG) {
+		if (Z_LVAL_P(handle) != (zend_long) SIG_DFL && Z_LVAL_P(handle) != (zend_long) SIG_IGN) {
+			zend_argument_value_error(2, "must be either SIG_DFL or SIG_IGN when an integer value is given");
+			RETURN_THROWS();
+		}
+	} else if (!zend_is_callable(handle, NULL, NULL)) {
+		PCNTL_G(last_error) = EINVAL;
+
+		zend_argument_type_error(2, "must be of type callable|int, %s given", zend_zval_value_name(handle));
+		RETURN_THROWS();
+	}
+
+	/* sigaction() always fails for these, and zend_sigaction() turns that into a fatal error */
+	if (signo == SIGKILL || signo == SIGSTOP) {
+		PCNTL_G(last_error) = EINVAL;
+		php_error_docref(NULL, E_WARNING, "Error assigning signal");
+		RETURN_FALSE;
+	}
+
 	if (!PCNTL_G(spares)) {
 		/* since calling malloc() from within a signal handler is not portable,
 		 * pre-allocate a few records for recording signals */
@@ -825,10 +848,6 @@ PHP_FUNCTION(pcntl_signal)
 
 	/* Special long value case for SIG_DFL and SIG_IGN */
 	if (Z_TYPE_P(handle) == IS_LONG) {
-		if (Z_LVAL_P(handle) != (zend_long) SIG_DFL && Z_LVAL_P(handle) != (zend_long) SIG_IGN) {
-			zend_argument_value_error(2, "must be either SIG_DFL or SIG_IGN when an integer value is given");
-			RETURN_THROWS();
-		}
 		if (php_signal(signo, (Sigfunc *) Z_LVAL_P(handle), restart_syscalls) == (void *)SIG_ERR) {
 			PCNTL_G(last_error) = errno;
 			php_error_docref(NULL, E_WARNING, "Error assigning signal");
@@ -836,13 +855,6 @@ PHP_FUNCTION(pcntl_signal)
 		}
 		zend_hash_index_update(&PCNTL_G(php_signal_table), signo, handle);
 		RETURN_TRUE;
-	}
-
-	if (!zend_is_callable_ex(handle, NULL, 0, NULL, NULL, NULL)) {
-		PCNTL_G(last_error) = EINVAL;
-
-		zend_argument_type_error(2, "must be of type callable|int, %s given", zend_zval_value_name(handle));
-		RETURN_THROWS();
 	}
 
 	/* Register with the OS first so that on failure we don't record a handler that was never installed */
@@ -1342,7 +1354,7 @@ static void pcntl_signal_handler(int signo, siginfo_t *siginfo, void *context)
 	PCNTL_G(tail) = psig;
 	PCNTL_G(pending_signals) = true;
 	if (PCNTL_G(async_signals)) {
-		zend_atomic_bool_store_ex(&EG(vm_interrupt), true);
+		atomic_store(&EG(vm_interrupt), true);
 	}
 }
 
@@ -1350,6 +1362,9 @@ void pcntl_signal_dispatch(void)
 {
 	zval params[2], *handle, retval;
 	struct php_pcntl_pending_signal *queue, *next;
+	zend_object *old_exception;
+	const zend_op *old_opline_before_exception = NULL;
+	const zend_op *old_opline = NULL;
 	sigset_t mask;
 	sigset_t old_mask;
 
@@ -1377,8 +1392,24 @@ void pcntl_signal_dispatch(void)
 	PCNTL_G(head) = NULL; /* simple stores are atomic */
 	PCNTL_G(tail) = NULL;
 
+	/* Dispatching can happen with an exception pending, e.g. from the interrupt check that runs
+	 * right after an internal function threw. call_user_function() does nothing in that state,
+	 * so set the exception aside while the handlers run. The frame is left as found: depending
+	 * on the caller, the exception may not be registered on it yet, or may already be on its
+	 * way to a catch block, and the caller takes it from there once we return. */
+	old_exception = EG(exception);
+	if (old_exception) {
+		if (EG(current_execute_data)) {
+			old_opline = EG(current_execute_data)->opline;
+		}
+		old_opline_before_exception = EG(opline_before_exception);
+		EG(exception) = NULL;
+	}
+
 	/* Allocate */
 	while (queue) {
+		bool handler_threw = false;
+
 		if ((handle = zend_hash_index_find(&PCNTL_G(php_signal_table), queue->signo)) != NULL) {
 			if (Z_TYPE_P(handle) != IS_LONG) {
 				ZVAL_LONG(&params[0], queue->signo);
@@ -1390,9 +1421,7 @@ void pcntl_signal_dispatch(void)
 				zval_ptr_dtor(&retval);
 				zval_ptr_dtor(&params[1]);
 
-				if (EG(exception)) {
-					break;
-				}
+				handler_threw = NULL != EG(exception);
 			}
 		}
 
@@ -1400,17 +1429,44 @@ void pcntl_signal_dispatch(void)
 		queue->next = PCNTL_G(spares);
 		PCNTL_G(spares) = queue;
 		queue = next;
+
+		/* No other handler can be called while the exception propagates */
+		if (handler_threw) {
+			break;
+		}
 	}
 
-	/* drain the remaining in case of exception thrown */
-	while (queue) {
-		next = queue->next;
-		queue->next = PCNTL_G(spares);
-		PCNTL_G(spares) = queue;
-		queue = next;
+	if (old_exception) {
+		if (EG(current_execute_data)) {
+			EG(current_execute_data)->opline = old_opline;
+		}
+		EG(opline_before_exception) = old_opline_before_exception;
+		if (EG(exception)) {
+			zend_exception_set_previous(EG(exception), old_exception);
+		} else {
+			EG(exception) = old_exception;
+		}
 	}
 
-	PCNTL_G(pending_signals) = false;
+	if (UNEXPECTED(queue)) {
+		/* Put back what the throwing handler did not get to, instead of dropping it, and ask
+		 * the engine to come back once the exception has been handled. Signals are still
+		 * blocked here, so PCNTL_G(head) cannot have been repopulated in the meantime. */
+		next = queue;
+
+		while (next->next) {
+			next = next->next;
+		}
+
+		PCNTL_G(head) = queue;
+		PCNTL_G(tail) = next;
+
+		if (PCNTL_G(async_signals)) {
+			atomic_store(&EG(vm_interrupt), true);
+		}
+	} else {
+		PCNTL_G(pending_signals) = false;
+	}
 
 	/* Re-enable queue */
 	PCNTL_G(processing_signal_queue) = false;
@@ -1755,7 +1811,7 @@ PHP_FUNCTION(pcntl_setcpuaffinity)
 			if (Z_TYPE_P(ncpu) == IS_STRING) {
 				zend_ulong tmp;
 				if (!ZEND_HANDLE_NUMERIC(Z_STR_P(ncpu), tmp)) {
-					zend_argument_value_error(2, "cpu id invalid value (%s)", ZSTR_VAL(Z_STR_P(ncpu)));
+					zend_argument_value_error(2, "cpu id invalid value (%pS)", Z_STR_P(ncpu));
 					PCNTL_CPU_DESTROY(mask);
 					RETURN_THROWS();
 				}
@@ -1771,7 +1827,7 @@ PHP_FUNCTION(pcntl_setcpuaffinity)
 		}
 
 		if (cpu < 0 || cpu >= maxcpus) {
-			zend_argument_value_error(2, "cpu id must be between 0 and " ZEND_ULONG_FMT " (" ZEND_LONG_FMT ")", maxcpus, cpu);
+			zend_argument_value_error(2, "cpu id must be between 0 and " ZEND_LONG_FMT " (" ZEND_LONG_FMT ")", maxcpus - 1, cpu);
 			PCNTL_CPU_DESTROY(mask);
 			RETURN_THROWS();
 		}
@@ -1835,28 +1891,28 @@ static qos_class_t qos_enum_to_pthread(zend_enum_Pcntl_QosClass entry)
 
 static zend_object *qos_lval_to_zval(qos_class_t qos_class)
 {
-	const char *entryname;
+	int entry_id;
 	switch (qos_class)
 	{
 	case QOS_CLASS_USER_INTERACTIVE:
-		entryname = "UserInteractive";
+		entry_id = ZEND_ENUM_Pcntl_QosClass_UserInteractive;
 		break;
 	case QOS_CLASS_USER_INITIATED:
-		entryname = "UserInitiated";
+		entry_id = ZEND_ENUM_Pcntl_QosClass_UserInitiated;
 		break;
 	case QOS_CLASS_UTILITY:
-		entryname = "Utility";
+		entry_id = ZEND_ENUM_Pcntl_QosClass_Utility;
 		break;
 	case QOS_CLASS_BACKGROUND:
-		entryname = "Background";
+		entry_id = ZEND_ENUM_Pcntl_QosClass_Background;
 		break;
 	case QOS_CLASS_DEFAULT:
 	default:
-		entryname = "Default";
+		entry_id = ZEND_ENUM_Pcntl_QosClass_Default;
 		break;
 	}
 
-	return zend_enum_get_case_cstr(QosClass_ce, entryname);
+	return zend_enum_get_case_by_id(QosClass_ce, entry_id);
 }
 
 PHP_FUNCTION(pcntl_getqos_class)
@@ -1878,9 +1934,10 @@ PHP_FUNCTION(pcntl_getqos_class)
 
 PHP_FUNCTION(pcntl_setqos_class)
 {
-	zend_enum_Pcntl_QosClass qos;
+	zend_enum_Pcntl_QosClass qos = ZEND_ENUM_Pcntl_QosClass_Default;
 
-	ZEND_PARSE_PARAMETERS_START(1, 1)
+	ZEND_PARSE_PARAMETERS_START(0, 1)
+		Z_PARAM_OPTIONAL
 		Z_PARAM_ENUM(qos, QosClass_ce)
 	ZEND_PARSE_PARAMETERS_END();
 

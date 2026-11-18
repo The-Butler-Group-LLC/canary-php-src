@@ -9,6 +9,7 @@ if test "$PHP_INTL" != "no"; then
   INTL_COMMON_FLAGS="$ICU_CFLAGS -Wno-write-strings -D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1"
   PHP_NEW_EXTENSION([intl], m4_normalize([
       intl_convert.c
+      intl_icu_compat.c
       intl_error.c
       php_intl.c
     ]),
@@ -31,6 +32,7 @@ if test "$PHP_INTL" != "no"; then
     common/common_error.cpp \
     dateformat/dateformat_class.cpp \
     converter/converter.cpp \
+    converter/converter_class.cpp \
     dateformat/dateformat.cpp \
     dateformat/dateformat_attr.cpp \
     dateformat/dateformat_attrcpp.cpp \
@@ -46,6 +48,7 @@ if test "$PHP_INTL" != "no"; then
     grapheme/grapheme_string.cpp \
     grapheme/grapheme_util.cpp \
     msgformat/msgformat_helpers.cpp \
+    numberformatter/numberformatter_class.cpp \
     rangeformatter/rangeformatter_class.cpp \
     timezone/timezone_class.cpp \
     timezone/timezone_methods.cpp \
@@ -72,6 +75,7 @@ if test "$PHP_INTL" != "no"; then
     breakiterator/codepointiterator_internal.cpp \
     breakiterator/codepointiterator_methods.cpp \
     listformatter/listformatter_class.cpp \
+    reldateformatter/reldateformatter_class.cpp \
     transliterator/transliterator_class.cpp \
     transliterator/transliterator_methods.cpp \
     idn/idn.cpp \
@@ -122,8 +126,10 @@ if test "$PHP_INTL" != "no"; then
     $ext_builddir/idn
     $ext_builddir/locale
     $ext_builddir/listformatter
+    $ext_builddir/reldateformatter
     $ext_builddir/msgformat
     $ext_builddir/normalizer
+    $ext_builddir/numberformatter
     $ext_builddir/rangeformatter
     $ext_builddir/resourcebundle
     $ext_builddir/spoofchecker

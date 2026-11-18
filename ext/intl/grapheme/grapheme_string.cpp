@@ -22,11 +22,9 @@
 #include <unicode/unistr.h>
 #endif
 
-extern "C" {
 #include <php.h>
 #include "grapheme.h"
 #include "grapheme_util.h"
-}
 
 #include <unicode/utypes.h>
 #include <unicode/utf8.h>
@@ -104,7 +102,7 @@ U_CFUNC PHP_FUNCTION(grapheme_strpos)
 		Z_PARAM_PATH(locale, locale_len)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if ( OUTSIDE_STRING(loffset, haystack_len) ) {
+	if (UNEXPECTED(OUTSIDE_STRING(loffset, haystack_len))) {
 		zend_argument_value_error(3, "must be contained in argument #1 ($haystack)");
 		RETURN_THROWS();
 	}
@@ -125,7 +123,9 @@ U_CFUNC PHP_FUNCTION(grapheme_strpos)
 		if (found) {
 			RETURN_LONG(found - haystack);
 		}
-		RETURN_FALSE;
+		if (grapheme_ascii_check((unsigned char *)needle, needle_len) >= 0) {
+			RETURN_FALSE;
+		}
 	}
 
 	/* do utf16 part of the strpos */
@@ -158,7 +158,7 @@ U_CFUNC PHP_FUNCTION(grapheme_stripos)
 		Z_PARAM_PATH(locale, locale_len)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if ( OUTSIDE_STRING(loffset, haystack_len) ) {
+	if (UNEXPECTED(OUTSIDE_STRING(loffset, haystack_len))) {
 		zend_argument_value_error(3, "must be contained in argument #1 ($haystack)");
 		RETURN_THROWS();
 	}
@@ -224,7 +224,7 @@ U_CFUNC PHP_FUNCTION(grapheme_strrpos)
 		Z_PARAM_PATH(locale, locale_len)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if ( OUTSIDE_STRING(loffset, haystack_len) ) {
+	if (UNEXPECTED(OUTSIDE_STRING(loffset, haystack_len))) {
 		zend_argument_value_error(3, "must be contained in argument #1 ($haystack)");
 		RETURN_THROWS();
 	}
@@ -283,7 +283,7 @@ U_CFUNC PHP_FUNCTION(grapheme_strripos)
 		Z_PARAM_PATH(locale, locale_len)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if ( OUTSIDE_STRING(loffset, haystack_len) ) {
+	if (UNEXPECTED(OUTSIDE_STRING(loffset, haystack_len))) {
 		zend_argument_value_error(3, "must be contained in argument #1 ($haystack)");
 		RETURN_THROWS();
 	}
@@ -345,7 +345,6 @@ U_CFUNC PHP_FUNCTION(grapheme_substr)
 	int32_t start = 0;
 	int iter_val;
 	UErrorCode status;
-	unsigned char u_break_iterator_buffer[U_BRK_SAFECLONE_BUFFERSIZE];
 	UBreakIterator* bi = nullptr;
 	int sub_str_start_pos, sub_str_end_pos;
 	int32_t (*iter_func)(UBreakIterator *);
@@ -359,7 +358,7 @@ U_CFUNC PHP_FUNCTION(grapheme_substr)
 		Z_PARAM_PATH(locale, locale_len)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (lstart < INT32_MIN || lstart > INT32_MAX) {
+	if (UNEXPECTED(lstart < INT32_MIN || lstart > INT32_MAX)) {
 		zend_argument_value_error(2, "is too large");
 		RETURN_THROWS();
 	}
@@ -370,7 +369,7 @@ U_CFUNC PHP_FUNCTION(grapheme_substr)
 		length = str_len;
 	}
 
-	if (length < INT32_MIN || length > INT32_MAX) {
+	if (UNEXPECTED(length < INT32_MIN || length > INT32_MAX)) {
 		zend_argument_value_error(3, "is too large");
 		RETURN_THROWS();
 	}
@@ -407,7 +406,7 @@ U_CFUNC PHP_FUNCTION(grapheme_substr)
 		RETURN_FALSE;
 	}
 
-	bi = grapheme_get_break_iterator((void*)u_break_iterator_buffer, &status );
+	bi = grapheme_get_break_iterator(&status);
 
 	if( U_FAILURE(status) ) {
 		RETURN_FALSE;
@@ -564,7 +563,9 @@ static void strstr_common_handler(INTERNAL_FUNCTION_PARAMETERS, int f_ignore_cas
 		Z_PARAM_PATH(locale, locale_len)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if ( !f_ignore_case ) {
+	if ( !f_ignore_case
+			&& grapheme_ascii_check((unsigned char *)haystack, haystack_len) >= 0
+			&& grapheme_ascii_check((unsigned char *)needle, needle_len) >= 0 ) {
 
 		/* ASCII optimization: quick check to see if the string might be there */
 		found = php_memnstr(haystack, needle, needle_len, haystack + haystack_len);
@@ -574,15 +575,12 @@ static void strstr_common_handler(INTERNAL_FUNCTION_PARAMETERS, int f_ignore_cas
 			RETURN_FALSE;
 		}
 
-		/* if it is there, and if the haystack is ascii, we are all done */
-		if ( grapheme_ascii_check((unsigned char *)haystack, haystack_len) >= 0 ) {
-			size_t found_offset = found - haystack;
+		size_t found_offset = found - haystack;
 
-			if (part) {
-				RETURN_STRINGL(haystack, found_offset);
-			} else {
-				RETURN_STRINGL(found, haystack_len - found_offset);
-			}
+		if (part) {
+			RETURN_STRINGL(haystack, found_offset);
+		} else {
+			RETURN_STRINGL(found, haystack_len - found_offset);
 		}
 
 	}
@@ -729,7 +727,6 @@ U_CFUNC PHP_FUNCTION(grapheme_extract)
 	int32_t start = 0;
 	zend_long extract_type = GRAPHEME_EXTRACT_TYPE_COUNT;
 	UErrorCode status;
-	unsigned char u_break_iterator_buffer[U_BRK_SAFECLONE_BUFFERSIZE];
 	UBreakIterator* bi = nullptr;
 	int ret_pos;
 	zval *next = nullptr; /* return offset of next part of the string */
@@ -760,17 +757,17 @@ U_CFUNC PHP_FUNCTION(grapheme_extract)
 		RETURN_THROWS();
 	}
 
-	if ( lstart > INT32_MAX || lstart < 0 || (size_t)lstart >= str_len ) {
+	if (UNEXPECTED(lstart > INT32_MAX || lstart < 0 || (size_t)lstart >= str_len)) {
 		intl_error_set( nullptr, U_ILLEGAL_ARGUMENT_ERROR, "start not contained in string");
 		RETURN_FALSE;
 	}
 
-	if (size < 0) {
+	if (UNEXPECTED(size < 0)) {
 		zend_argument_value_error(2, "must be greater than or equal to 0");
 		RETURN_THROWS();
 	}
 
-	if (size > INT32_MAX) {
+	if (UNEXPECTED(size > INT32_MAX)) {
 		zend_argument_value_error(2, "is too large");
 		RETURN_THROWS();
 	}
@@ -829,7 +826,7 @@ U_CFUNC PHP_FUNCTION(grapheme_extract)
 
 	bi = nullptr;
 	status = U_ZERO_ERROR;
-	bi = grapheme_get_break_iterator(u_break_iterator_buffer, &status );
+	bi = grapheme_get_break_iterator(&status);
 
 	ubrk_setUText(bi, &ut, &status);
 	/* if the caller put us in the middle of a grapheme, we can't detect it in all cases since we
@@ -855,7 +852,6 @@ U_CFUNC PHP_FUNCTION(grapheme_str_split)
 	zend_string *str;
 	zend_long split_len = 1;
 
-	unsigned char u_break_iterator_buffer[U_BRK_SAFECLONE_BUFFERSIZE];
 	UErrorCode ustatus = U_ZERO_ERROR;
 	int32_t pos, current, i, end_len = 0;
 	UBreakIterator* bi;
@@ -867,7 +863,7 @@ U_CFUNC PHP_FUNCTION(grapheme_str_split)
 		Z_PARAM_LONG(split_len)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (split_len <= 0 || split_len > UINT_MAX / 4) {
+	if (UNEXPECTED(split_len <= 0 || split_len > UINT_MAX / 4)) {
 		zend_argument_value_error(2, "must be greater than 0 and less than or equal to %d", UINT_MAX / 4);
 		RETURN_THROWS();
 	}
@@ -891,7 +887,7 @@ U_CFUNC PHP_FUNCTION(grapheme_str_split)
 
 	bi = nullptr;
 	ustatus = U_ZERO_ERROR;
-	bi = grapheme_get_break_iterator((void*)u_break_iterator_buffer, &ustatus );
+	bi = grapheme_get_break_iterator(&ustatus);
 
 	if( U_FAILURE(ustatus) ) {
 		RETURN_FALSE;
@@ -909,11 +905,14 @@ U_CFUNC PHP_FUNCTION(grapheme_str_split)
 		if (i == split_len - 1) {
 			if ( pos != UBRK_DONE ) {
 				add_next_index_stringl(return_value, pstr, pos - current);
+				if (ZEND_HAS_OOM()) {
+					goto oom;
+				}
 				end = pstr + pos - current;
 				i = 0;
+				pstr += pos - current;
+				current = pos;
 			}
-			pstr += pos - current;
-			current = pos;
 		} else {
 			i += 1;
 		}
@@ -925,6 +924,12 @@ U_CFUNC PHP_FUNCTION(grapheme_str_split)
 
 	utext_close(ut);
 	ubrk_close(bi);
+	return;
+
+oom:
+	utext_close(ut);
+	ubrk_close(bi);
+	RETURN_OOM();
 }
 
 U_CFUNC PHP_FUNCTION(grapheme_levenshtein)
@@ -946,17 +951,17 @@ U_CFUNC PHP_FUNCTION(grapheme_levenshtein)
 		Z_PARAM_PATH(locale, locale_len)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (cost_ins <= 0 || cost_ins > UINT_MAX / 4) {
+	if (UNEXPECTED(cost_ins <= 0 || cost_ins > UINT_MAX / 4)) {
 		zend_argument_value_error(3, "must be greater than 0 and less than or equal to %d", UINT_MAX / 4);
 		RETURN_THROWS();
 	}
 
-	if (cost_rep <= 0 || cost_rep > UINT_MAX / 4) {
+	if (UNEXPECTED(cost_rep <= 0 || cost_rep > UINT_MAX / 4)) {
 		zend_argument_value_error(4, "must be greater than 0 and less than or equal to %d", UINT_MAX / 4);
 		RETURN_THROWS();
 	}
 
-	if (cost_del <= 0 || cost_del > UINT_MAX / 4) {
+	if (UNEXPECTED(cost_del <= 0 || cost_del > UINT_MAX / 4)) {
 		zend_argument_value_error(5, "must be greater than 0 and less than or equal to %d", UINT_MAX / 4);
 		RETURN_THROWS();
 	}
@@ -994,6 +999,9 @@ U_CFUNC PHP_FUNCTION(grapheme_levenshtein)
 
 	intl_convert_utf8_to_utf16(&ustring1, &ustring1_len, pstr1, ZSTR_LEN(string1), &ustatus);
 
+	if (ZEND_HAS_OOM()) {
+		goto out_ustring1;
+	}
 	if (U_FAILURE(ustatus)) {
 		intl_error_set_code(NULL, ustatus);
 
@@ -1004,6 +1012,9 @@ U_CFUNC PHP_FUNCTION(grapheme_levenshtein)
 
 	intl_convert_utf8_to_utf16(&ustring2, &ustring2_len, pstr2, ZSTR_LEN(string2), &ustatus);
 
+	if (ZEND_HAS_OOM()) {
+		goto out_ustring2;
+	}
 	if (U_FAILURE(ustatus)) {
 		intl_error_set_code(NULL, ustatus);
 
@@ -1031,9 +1042,7 @@ U_CFUNC PHP_FUNCTION(grapheme_levenshtein)
 		goto out_ustring2;
 	}
 
-	unsigned char u_break_iterator_buffer1[U_BRK_SAFECLONE_BUFFERSIZE];
-	unsigned char u_break_iterator_buffer2[U_BRK_SAFECLONE_BUFFERSIZE];
-	bi1 = grapheme_get_break_iterator(u_break_iterator_buffer1, &ustatus);
+	bi1 = grapheme_get_break_iterator(&ustatus);
 	if (U_FAILURE(ustatus)) {
 		intl_error_set_code(NULL, ustatus);
 		intl_error_set_custom_msg(NULL, "Error on grapheme_get_break_iterator for argument #1 ($string1)");
@@ -1041,7 +1050,7 @@ U_CFUNC PHP_FUNCTION(grapheme_levenshtein)
 		goto out_bi1;
 	}
 
-	bi2 = grapheme_get_break_iterator(u_break_iterator_buffer2, &ustatus);
+	bi2 = grapheme_get_break_iterator(&ustatus);
 	if (U_FAILURE(ustatus)) {
 		intl_error_set_code(NULL, ustatus);
 		intl_error_set_custom_msg(NULL, "Error on grapheme_get_break_iterator for argument #2 ($string2)");
@@ -1076,8 +1085,15 @@ U_CFUNC PHP_FUNCTION(grapheme_levenshtein)
 	}
 
 	zend_long *p1, *p2, *tmp;
-	p1 = reinterpret_cast<zend_long *>(safe_emalloc((size_t) strlen_2 + 1, sizeof(zend_long), 0));
-	p2 = reinterpret_cast<zend_long *>(safe_emalloc((size_t) strlen_2 + 1, sizeof(zend_long), 0));
+	p1 = reinterpret_cast<zend_long *>(safe_femalloc((size_t) strlen_2 + 1, sizeof(zend_long), 0, /* fallible */ true));
+	if (!p1) {
+		goto out_collator;
+	}
+	p2 = reinterpret_cast<zend_long *>(safe_femalloc((size_t) strlen_2 + 1, sizeof(zend_long), 0, /* fallible */ true));
+	if (!p2) {
+		efree(p1);
+		goto out_collator;
+	}
 
 	for (i2 = 0; i2 <= strlen_2; i2++) {
 		p1[i2] = i2 * cost_ins;
@@ -1144,7 +1160,6 @@ U_CFUNC PHP_FUNCTION(grapheme_strrev)
 	char *pstr, *end, *p;
 	zend_string *ret;
 	int32_t pos = 0, current = 0, end_len = 0;
-	unsigned char u_break_iterator_buffer[U_BRK_SAFECLONE_BUFFERSIZE];
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_STR(string)
@@ -1168,7 +1183,7 @@ U_CFUNC PHP_FUNCTION(grapheme_strrev)
 	bi = nullptr;
 	ustatus = U_ZERO_ERROR;
 
-	bi = grapheme_get_break_iterator((void*)u_break_iterator_buffer, &ustatus );
+	bi = grapheme_get_break_iterator(&ustatus);
 	ret = zend_string_alloc(ZSTR_LEN(string), 0);
 	p = ZSTR_VAL(ret);
 
@@ -1181,6 +1196,9 @@ U_CFUNC PHP_FUNCTION(grapheme_strrev)
 	current = ZSTR_LEN(string);
 	for (end = pstr; pos != UBRK_DONE; ) {
 		pos = ubrk_previous(bi);
+		if (pos == UBRK_DONE) {
+			break;
+		}
 		end_len = current - pos;
 		for (int32_t j = 0; j < end_len; j++) {
 			*p++ = *(pstr + pos + j);
@@ -1188,6 +1206,7 @@ U_CFUNC PHP_FUNCTION(grapheme_strrev)
 		current = pos;
 	}
 ubrk_end:
+	ZSTR_VAL(ret)[ZSTR_LEN(ret)] = '\0';
 	RETVAL_NEW_STR(ret);
 	ubrk_close(bi);
 close:

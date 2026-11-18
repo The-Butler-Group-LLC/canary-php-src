@@ -320,7 +320,7 @@ EVP_PKEY *php_openssl_pkey_init_ec(zval *data, bool *is_private) {
 	if (curve_name_zv && Z_TYPE_P(curve_name_zv) == IS_STRING && Z_STRLEN_P(curve_name_zv) > 0) {
 		nid = OBJ_sn2nid(Z_STRVAL_P(curve_name_zv));
 		if (nid == NID_undef) {
-			php_error_docref(NULL, E_WARNING, "Unknown elliptic curve (short) name %s", Z_STRVAL_P(curve_name_zv));
+			php_error_docref(NULL, E_WARNING, "Unknown elliptic curve (short) name %pS", Z_STR_P(curve_name_zv));
 			goto cleanup;
 		}
 
@@ -402,7 +402,7 @@ EVP_PKEY *php_openssl_pkey_init_ec(zval *data, bool *is_private) {
 		}
 
 		OPENSSL_PKEY_SET_BN(data, cofactor);
-		if (!OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_EC_COFACTOR, cofactor) ||
+		if ((cofactor && !OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_EC_COFACTOR, cofactor)) ||
 			!EC_GROUP_set_generator(group, point_g, order, cofactor)) {
 			goto cleanup;
 		}

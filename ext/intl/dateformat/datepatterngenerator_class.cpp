@@ -20,13 +20,13 @@
 
 #include <unicode/dtptngen.h>
 
-extern "C" {
 #define USE_DATETIMEPATTERNGENERATOR_POINTER 1
 #include "datepatterngenerator_class.h"
+BEGIN_EXTERN_C()
 #include "datepatterngenerator_arginfo.h"
+END_EXTERN_C()
 #include <zend_exceptions.h>
 #include <assert.h>
-}
 
 using icu::DateTimePatternGenerator;
 using icu::Locale;
@@ -36,7 +36,7 @@ zend_object_handlers IntlDatePatternGenerator_handlers;
 
 static zend_object *IntlDatePatternGenerator_object_clone(zend_object *object)
 {
-	IntlDatePatternGenerator_object *dtpgo_orig = php_intl_datepatterngenerator_fetch_object(object);
+	const IntlDatePatternGenerator_object *dtpgo_orig = php_intl_datepatterngenerator_fetch_object(object);
 	zend_object                        *ret_val = IntlDatePatternGenerator_ce_ptr->create_object(object->ce);
 	IntlDatePatternGenerator_object  *dtpgo_new = php_intl_datepatterngenerator_fetch_object(ret_val);
 
@@ -97,7 +97,7 @@ static zend_object *IntlDatePatternGenerator_object_create(zend_class_entry *ce)
 /*
  * Initialize 'IntlDatePatternGenerator' class
  */
-void dateformat_register_IntlDatePatternGenerator_class( void )
+U_CFUNC void dateformat_register_IntlDatePatternGenerator_class( void )
 {
 	/* Create and register 'IntlDatePatternGenerator' class. */
 	IntlDatePatternGenerator_ce_ptr = register_class_IntlDatePatternGenerator();

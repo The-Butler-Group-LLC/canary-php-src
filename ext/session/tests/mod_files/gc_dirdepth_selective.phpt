@@ -3,10 +3,11 @@ session GC deletes only expired sess_* files and leaves all other files untouche
 --EXTENSIONS--
 session
 --SKIPIF--
-<?php include(__DIR__ . '/../skipif.inc'); ?>
+<?php include __DIR__ . '/../skipif.inc'; ?>
 --INI--
 session.gc_probability=0
 session.gc_maxlifetime=10
+session.use_strict_mode=0
 --FILE--
 <?php
 $base = __DIR__ . '/gc_selective_test';

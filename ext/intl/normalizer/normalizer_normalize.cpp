@@ -21,13 +21,11 @@
 #include <unicode/unistr.h>
 #endif
 
-extern "C" {
 #include "php_intl.h"
 #include <unicode/unorm2.h>
 #include "normalizer.h"
 #include "normalizer_class.h"
 #include "intl_convert.h"
-}
 #include <unicode/utf8.h>
 
 
@@ -54,7 +52,7 @@ static const UNormalizer2 *intl_get_normalizer(zend_long form, UErrorCode *err)
 static int32_t intl_normalize(zend_long form, const UChar *src, int32_t src_len, UChar *dst, int32_t dst_len, UErrorCode *err)
 {/*{{{*/
 	const UNormalizer2 *norm = intl_get_normalizer(form, err);
-	if (U_FAILURE(*err)) {
+	if (UNEXPECTED(U_FAILURE(*err))) {
 		return -1;
 	}
 
@@ -65,7 +63,7 @@ static UBool intl_is_normalized(zend_long form, const UChar *uinput, int32_t uin
 {/*{{{*/
 	const UNormalizer2 *norm = intl_get_normalizer(form, err);
 
-	if(U_FAILURE(*err)) {
+	if (UNEXPECTED(U_FAILURE(*err))) {
 		return false;
 	}
 
@@ -73,7 +71,7 @@ static UBool intl_is_normalized(zend_long form, const UChar *uinput, int32_t uin
 }/*}}}*/
 
 /* {{{ Normalize a string. */
-U_CFUNC PHP_FUNCTION( normalizer_normalize )
+PHP_INTL_FUNCTION_WITH_ERROR_RESET(normalizer_normalize)
 {
 	char*			input = NULL;
 	/* form is optional, defaults to FORM_C */
@@ -92,7 +90,6 @@ U_CFUNC PHP_FUNCTION( normalizer_normalize )
 
 	int32_t			size_needed;
 
-	intl_error_reset( NULL );
 
 	/* Parse parameters. */
 	if( zend_parse_method_parameters( ZEND_NUM_ARGS(), getThis(), "s|l",
@@ -115,7 +112,7 @@ U_CFUNC PHP_FUNCTION( normalizer_normalize )
 		case NORMALIZER_FORM_KC_CF:
 			break;
 		default:
-			zend_argument_value_error(2, "must be a a valid normalization form");
+			zend_argument_value_error(2, "must be a valid normalization form");
 			RETURN_THROWS();
 	}
 
@@ -142,7 +139,10 @@ U_CFUNC PHP_FUNCTION( normalizer_normalize )
 
 	/* Allocate memory for the destination buffer for normalization */
 	uret_len = uinput_len * expansion_factor;
-	uret_buf = eumalloc( uret_len + 1 );
+	uret_buf = (UChar*)safe_femalloc(uret_len + 1, sizeof(UChar), 0, /* fallible */ true);
+	if (!uret_buf) {
+		RETURN_OOM();
+	}
 
 	/* normalize */
 	size_needed = intl_normalize(form, uinput, uinput_len, uret_buf, uret_len, &status);
@@ -151,7 +151,7 @@ U_CFUNC PHP_FUNCTION( normalizer_normalize )
 	 * (U_BUFFER_OVERFLOW_ERROR means that *target buffer is not large enough).
 	 * (U_STRING_NOT_TERMINATED_WARNING usually means that the input string is empty).
 	 */
-	if( U_FAILURE(status) && status != U_BUFFER_OVERFLOW_ERROR && status != U_STRING_NOT_TERMINATED_WARNING ) {
+	if (UNEXPECTED(U_FAILURE(status) && status != U_BUFFER_OVERFLOW_ERROR && status != U_STRING_NOT_TERMINATED_WARNING)) {
 		intl_error_set_custom_msg( NULL, "Error normalizing string");
 		efree( uret_buf );
 		efree( uinput );
@@ -163,7 +163,11 @@ U_CFUNC PHP_FUNCTION( normalizer_normalize )
 		 * uret_buf =  eurealloc(uret_buf, size_needed + 1);
 		 */
 		efree( uret_buf );
-		uret_buf = eumalloc( size_needed + 1 );
+		uret_buf = (UChar*)safe_femalloc(size_needed + 1, sizeof(UChar), 0, /* fallible */ true);
+		if (!uret_buf) {
+			efree(uinput);
+			RETURN_OOM();
+		}
 		uret_len = size_needed;
 
 		status = U_ZERO_ERROR;
@@ -172,7 +176,7 @@ U_CFUNC PHP_FUNCTION( normalizer_normalize )
 		size_needed = intl_normalize(form, uinput, uinput_len, uret_buf, uret_len, &status);
 
 		/* Bail out if an unexpected error occurred. */
-		if( U_FAILURE(status)  ) {
+		if (UNEXPECTED(U_FAILURE(status))) {
 			/* Set error messages. */
 			intl_error_set_custom_msg( NULL,"Error normalizing string");
 			efree( uret_buf );
@@ -202,7 +206,7 @@ U_CFUNC PHP_FUNCTION( normalizer_normalize )
 /* }}} */
 
 /* {{{ Test if a string is in a given normalization form. */
-U_CFUNC PHP_FUNCTION( normalizer_is_normalized )
+PHP_INTL_FUNCTION_WITH_ERROR_RESET(normalizer_is_normalized)
 {
 	char*	 	input = NULL;
 	/* form is optional, defaults to FORM_C */
@@ -215,7 +219,6 @@ U_CFUNC PHP_FUNCTION( normalizer_is_normalized )
 
 	UBool		uret = false;
 
-	intl_error_reset( NULL );
 
 	/* Parse parameters. */
 	if( zend_parse_method_parameters( ZEND_NUM_ARGS(), getThis(), "s|l",
@@ -232,7 +235,7 @@ U_CFUNC PHP_FUNCTION( normalizer_is_normalized )
 		case NORMALIZER_FORM_KC_CF:
 			break;
 		default:
-			zend_argument_value_error(2, "must be a a valid normalization form");
+			zend_argument_value_error(2, "must be a valid normalization form");
 			RETURN_THROWS();
 	}
 
@@ -264,7 +267,7 @@ U_CFUNC PHP_FUNCTION( normalizer_is_normalized )
 	efree( uinput );
 
 	/* Bail out if an unexpected error occurred. */
-	if( U_FAILURE(status)  ) {
+	if (UNEXPECTED(U_FAILURE(status))) {
 		/* Set error messages. */
 		intl_error_set_custom_msg( NULL,"Error testing if string is the given normalization form.");
 		RETURN_FALSE;
@@ -278,7 +281,7 @@ U_CFUNC PHP_FUNCTION( normalizer_is_normalized )
 /* }}} */
 
 /* {{{ Returns the Decomposition_Mapping property for the given UTF-8 encoded code point. */
-U_CFUNC PHP_FUNCTION( normalizer_get_raw_decomposition )
+PHP_INTL_FUNCTION_WITH_ERROR_RESET(normalizer_get_raw_decomposition)
 {
 	char* input = NULL;
 	size_t input_length = 0;
@@ -293,7 +296,6 @@ U_CFUNC PHP_FUNCTION( normalizer_get_raw_decomposition )
 
 	zend_long form = NORMALIZER_DEFAULT;
 
-	intl_error_reset(NULL);
 
 	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_STRING(input, input_length)
@@ -304,20 +306,20 @@ U_CFUNC PHP_FUNCTION( normalizer_get_raw_decomposition )
 	norm = intl_get_normalizer(form, &status);
 
 	U8_NEXT(input, offset, input_length, codepoint);
-	if ((size_t)offset != input_length) {
+	if (UNEXPECTED((size_t)offset != input_length)) {
 		intl_error_set_code(NULL, U_ILLEGAL_ARGUMENT_ERROR);
 		intl_error_set_custom_msg(NULL, "Input string must be exactly one UTF-8 encoded code point long.");
 		return;
 	}
 
-	if ((codepoint < UCHAR_MIN_VALUE) || (codepoint > UCHAR_MAX_VALUE)) {
+	if (UNEXPECTED((codepoint < UCHAR_MIN_VALUE) || (codepoint > UCHAR_MAX_VALUE))) {
 		intl_error_set_code(NULL, U_ILLEGAL_ARGUMENT_ERROR);
 		intl_error_set_custom_msg(NULL, "Code point out of range");
 		return;
 	}
 
 	decomposition_length = unorm2_getRawDecomposition(norm, codepoint, decomposition, 32, &status);
-	if (decomposition_length == -1) {
+	if (UNEXPECTED(decomposition_length == -1)) {
 		RETURN_NULL();
 	}
 

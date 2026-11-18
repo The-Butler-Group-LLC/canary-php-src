@@ -175,6 +175,7 @@ typedef struct _zend_jit_op_array_hot_extension {
 	zend_jit_hash((op_array)->opcodes)
 
 extern const zend_op *zend_jit_halt_op;
+extern const zend_op *zend_jit_interrupt_op;
 
 #ifdef HAVE_GCC_GLOBAL_REGS
 # define EXECUTE_DATA_D                       void
@@ -221,7 +222,7 @@ extern const zend_op *zend_jit_halt_op;
 # define ZEND_OPCODE_HANDLER_ARGS_PASSTHRU    EXECUTE_DATA_C OPLINE_CC
 # define ZEND_OPCODE_HANDLER_ARGS_EX          EXECUTE_DATA_D OPLINE_DC,
 # define ZEND_OPCODE_HANDLER_ARGS_PASSTHRU_EX EXECUTE_DATA_C OPLINE_CC,
-# define ZEND_VM_ENTER_BIT 1ULL
+# define ZEND_VM_ENTER_BIT ((uintptr_t)1)
 #endif
 
 /* VM helpers */

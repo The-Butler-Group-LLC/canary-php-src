@@ -19,7 +19,6 @@
 
 #include "php.h"
 #include "php_shmop.h"
-#include "Zend/zend_attributes.h"
 
 #include "shmop_arginfo.h"
 
@@ -68,10 +67,7 @@ typedef struct php_shmop
 zend_class_entry *shmop_ce;
 static zend_object_handlers shmop_object_handlers;
 
-static inline php_shmop *shmop_from_obj(zend_object *obj)
-{
-	return (php_shmop *)((char *)(obj) - offsetof(php_shmop, std));
-}
+#define shmop_from_obj(obj) ZEND_CONTAINER_OF(obj, php_shmop, std)
 
 #define Z_SHMOP_P(zv) shmop_from_obj(Z_OBJ_P(zv))
 
@@ -132,13 +128,20 @@ PHP_MINFO_FUNCTION(shmop)
 /* {{{ gets and attaches a shared memory segment */
 PHP_FUNCTION(shmop_open)
 {
-	zend_long key, mode, size;
+	zend_long key_arg, mode, size;
+	key_t key;
 	php_shmop *shmop;
 	struct shmid_ds shm;
 	char *flags;
 	size_t flags_len;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "lsll", &key, &flags, &flags_len, &mode, &size) == FAILURE) {
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "lsll", &key_arg, &flags, &flags_len, &mode, &size) == FAILURE) {
+		RETURN_THROWS();
+	}
+
+	key = (key_t) key_arg;
+	if ((zend_long) key != key_arg) {
+		zend_argument_value_error(1, "is out of range");
 		RETURN_THROWS();
 	}
 
@@ -220,7 +223,6 @@ PHP_FUNCTION(shmop_read)
 	zend_long start, count;
 	php_shmop *shmop;
 	char *startaddr;
-	int bytes;
 	zend_string *return_string;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "Oll", &shmid, shmop_ce, &start, &count) == FAILURE) {
@@ -240,9 +242,12 @@ PHP_FUNCTION(shmop_read)
 	}
 
 	startaddr = shmop->addr + start;
-	bytes = count ? count : shmop->size - start;
+	zend_long bytes = count ? count : shmop->size - start;
 
-	return_string = zend_string_init(startaddr, bytes, 0);
+	return_string = zend_string_finit(startaddr, bytes, /* persistent */ false, /* fallible */ true);
+	if (UNEXPECTED(!return_string)) {
+		RETURN_OOM();
+	}
 
 	RETURN_NEW_STR(return_string);
 }

@@ -25,7 +25,6 @@
 
 ZEND_DECLARE_MODULE_GLOBALS(filter)
 
-#include "zend_attributes.h"
 #include "filter_private.h"
 #include "filter_arginfo.h"
 #include "zend_exceptions.h"
@@ -260,8 +259,8 @@ static void php_zval_filter(zval *value, zend_long filter, zend_long flags, zval
 				zend_throw_exception_ex(
 					php_filter_failed_exception_ce,
 					0,
-					"filter validation failed: object of type %s has no __toString() method",
-					ZSTR_VAL(ce->name)
+					"filter validation failed: object of type %pS has no __toString() method",
+					ce->name
 				);
 				ZVAL_NULL(value);
 				return;
@@ -292,14 +291,14 @@ static void php_zval_filter(zval *value, zend_long filter, zend_long flags, zval
 			zend_throw_exception_ex(
 				php_filter_failed_exception_ce,
 				0,
-				"filter validation failed: filter %s not satisfied by '%s'",
+				"filter validation failed: filter %s not satisfied by '%pS'",
 				filter_func.name,
-				ZSTR_VAL(copy_for_throwing)
+				copy_for_throwing
 			);
-			zend_string_delref(copy_for_throwing);
+			zend_string_release(copy_for_throwing);
 			return;
 		}
-		zend_string_delref(copy_for_throwing);
+		zend_string_release(copy_for_throwing);
 		copy_for_throwing = NULL;
 	}
 
@@ -357,17 +356,25 @@ static unsigned int php_sapi_filter(int arg, const char *var, char **val, size_t
 
 	if (array_ptr) {
 		/* Store the RAW variable internally */
-		ZVAL_STRINGL(&raw_var, *val, val_len);
+		if (UNEXPECTED(!ZVAL_FSTRINGL(&raw_var, *val, val_len))) {
+			return 0;
+		}
 		php_register_variable_ex(var, &raw_var, array_ptr);
+		if (ZEND_HAS_OOM()) {
+			return 0;
+		}
 	}
 
 	if (val_len) {
 		/* Register mangled variable */
+		if (UNEXPECTED(!ZVAL_FSTRINGL(&new_var, *val, val_len))) {
+			return 0;
+		}
 		if (IF_G(default_filter) != FILTER_UNSAFE_RAW) {
-			ZVAL_STRINGL(&new_var, *val, val_len);
 			php_zval_filter(&new_var, IF_G(default_filter), IF_G(default_filter_flags), NULL, NULL);
-		} else {
-			ZVAL_STRINGL(&new_var, *val, val_len);
+			if (ZEND_HAS_OOM()) {
+				return 0;
+			}
 		}
 	} else { /* empty string */
 		ZVAL_EMPTY_STRING(&new_var);
@@ -378,15 +385,30 @@ static unsigned int php_sapi_filter(int arg, const char *var, char **val, size_t
 	}
 
 	if (retval) {
+		zend_string *tmp_str;
+		zend_string *str = zval_get_tmp_string(&new_var, &tmp_str);
 		if (new_val_len) {
-			*new_val_len = Z_STRLEN(new_var);
+			*new_val_len = ZSTR_LEN(str);
 		}
 		efree(*val);
-		if (Z_STRLEN(new_var)) {
-			*val = estrndup(Z_STRVAL(new_var), Z_STRLEN(new_var));
+		if (ZSTR_LEN(str)) {
+			*val = femalloc(ZSTR_LEN(str) + 1, /* fallible */ true);
+			if (UNEXPECTED(!*val)) {
+				/* The caller frees *val either way, so leave it pointing at
+				 * something. */
+				*val = estrdup("");
+				if (new_val_len) {
+					*new_val_len = 0;
+				}
+				zend_tmp_string_release(tmp_str);
+				zval_ptr_dtor(&new_var);
+				return 0;
+			}
+			memcpy(*val, ZSTR_VAL(str), ZSTR_LEN(str) + 1);
 		} else {
 			*val = estrdup("");
 		}
+		zend_tmp_string_release(tmp_str);
 		zval_ptr_dtor(&new_var);
 	}
 
@@ -399,6 +421,13 @@ static void php_zval_filter_recursive(zval *value, zend_long filter, zend_long f
 	if (Z_TYPE_P(value) == IS_ARRAY) {
 		zval *element;
 
+#ifdef ZEND_CHECK_STACK_LIMIT
+		if (UNEXPECTED(zend_call_stack_overflowed(EG(stack_limit)))) {
+			zend_call_stack_size_error();
+			return;
+		}
+#endif
+
 		if (Z_IS_RECURSIVE_P(value)) {
 			return;
 		}
@@ -409,6 +438,10 @@ static void php_zval_filter_recursive(zval *value, zend_long filter, zend_long f
 			if (Z_TYPE_P(element) == IS_ARRAY) {
 				SEPARATE_ARRAY(element);
 				php_zval_filter_recursive(element, filter, flags, options, charset);
+				if (EG(exception)) {
+					Z_UNPROTECT_RECURSION_P(value);
+					return;
+				}
 			} else {
 				php_zval_filter(element, filter, flags, options, charset);
 			}
@@ -636,6 +669,7 @@ static void php_filter_array_handler(zval *input, HashTable *op_ht, zend_long op
 					2
 				);
 				if (EG(exception)) {
+					zval_ptr_dtor(&nval);
 					RETURN_THROWS();
 				}
 				zend_hash_update(Z_ARRVAL_P(return_value), arg_key, &nval);
@@ -696,8 +730,8 @@ PHP_FUNCTION(filter_input)
 			zend_throw_exception_ex(
 				php_filter_failed_exception_ce,
 				0,
-				"input value '%s' not found",
-				ZSTR_VAL(var)
+				"input value '%pS' not found",
+				var
 			);
 			RETURN_THROWS();
 		}

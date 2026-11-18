@@ -37,7 +37,7 @@
 		char *tmp = path; \
 		while (*tmp) { \
 			if (*tmp == '\\') *tmp = '/'; \
-			else *tmp = tolower(*tmp); \
+			else *tmp = tolower((unsigned char)*tmp); \
 				tmp++; \
 		} \
 	}
@@ -560,7 +560,13 @@ void php_init_config(void)
 					fp = VCWD_FOPEN(php_ini_file_name, "r");
 					if (fp) {
 						filename = expand_filepath(php_ini_file_name, NULL);
-						free_filename = true;
+						if (filename) {
+							free_filename = true;
+						} else {
+							/* Reject the file, like ZTS where VCWD_STAT() already fails */
+							fclose(fp);
+							fp = NULL;
+						}
 					}
 				}
 			}
@@ -694,7 +700,7 @@ void php_init_config(void)
 
 		if (total_l) {
 			size_t php_ini_scanned_files_len = (php_ini_scanned_files) ? strlen(php_ini_scanned_files) + 1 : 0;
-			php_ini_scanned_files = (char *) realloc(php_ini_scanned_files, php_ini_scanned_files_len + total_l + 1);
+			php_ini_scanned_files = (char *) perealloc(php_ini_scanned_files, php_ini_scanned_files_len + total_l + 1, true);
 			if (!php_ini_scanned_files_len) {
 				*php_ini_scanned_files = '\0';
 			}

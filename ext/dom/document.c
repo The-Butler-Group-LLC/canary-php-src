@@ -1085,6 +1085,9 @@ static void php_dom_transfer_document_ref_single_aux(xmlNodePtr node, php_libxml
 	if (node->type == XML_ELEMENT_NODE) {
 		for (xmlAttrPtr attr = node->properties; attr != NULL; attr = attr->next) {
 			php_dom_transfer_document_ref_single_node((xmlNodePtr) attr, new_document);
+			for (xmlNodePtr child = attr->children; child; child = child->next) {
+				php_dom_transfer_document_ref_single_node((xmlNodePtr) child, new_document);
+			}
 		}
 	}
 }
@@ -1670,7 +1673,9 @@ static void dom_document_save_xml(INTERNAL_FUNCTION_PARAMETERS, zend_class_entry
 	}
 
 	if (!res) {
-		php_error_docref(NULL, E_WARNING, "Could not save document");
+		if (!EG(exception)) {
+			php_error_docref(NULL, E_WARNING, "Could not save document");
+		}
 		RETURN_FALSE;
 	} else {
 		RETURN_NEW_STR(res);
@@ -1749,6 +1754,35 @@ static int dom_perform_xinclude(xmlDocPtr docp, dom_object *intern, zend_long fl
 	return err;
 }
 
+/* For modern DOM, namespace declarations are stored as attributes (node->nsDef
+ * is NULL), so libxml's native validators can't resolve prefixed QNames found in
+ * content (e.g. an xs:QName attribute value). Temporarily relink them, mirroring
+ * what C14N does in dom_canonicalization(). */
+typedef struct {
+	HashTable links;
+	bool active;
+} dom_validate_ns_guard;
+
+static void dom_validate_ns_guard_begin(dom_validate_ns_guard *guard, xmlDocPtr docp)
+{
+	guard->active = php_dom_follow_spec_node((const xmlNode *) docp);
+	if (guard->active) {
+		zend_hash_init(&guard->links, 0, NULL, NULL, false);
+		xmlNodePtr root_element = xmlDocGetRootElement(docp);
+		if (root_element) {
+			dom_relink_ns_decls(&guard->links, root_element);
+		}
+	}
+}
+
+static void dom_validate_ns_guard_end(dom_validate_ns_guard *guard)
+{
+	if (guard->active) {
+		dom_unlink_ns_decls(&guard->links);
+		zend_hash_destroy(&guard->links);
+	}
+}
+
 /* {{{ Substitutues xincludes in a DomDocument */
 PHP_METHOD(DOMDocument, xinclude)
 {
@@ -1822,8 +1856,11 @@ PHP_METHOD(DOMDocument, validate)
 	cvp->userData = NULL;
 	cvp->error    = (xmlValidityErrorFunc) php_libxml_error_handler;
 	cvp->warning  = (xmlValidityErrorFunc) php_libxml_error_handler;
-
-	if (xmlValidateDocument(cvp, docp)) {
+	dom_validate_ns_guard guard;
+	dom_validate_ns_guard_begin(&guard, docp);
+	int dtd_valid = xmlValidateDocument(cvp, docp);
+	dom_validate_ns_guard_end(&guard);
+	if (dtd_valid) {
 		RETVAL_TRUE;
 	} else {
 		RETVAL_FALSE;
@@ -1920,7 +1957,10 @@ static void dom_document_schema_validate(INTERNAL_FUNCTION_PARAMETERS, int type)
 	PHP_LIBXML_SANITIZE_GLOBALS(validate);
 	xmlSchemaSetValidOptions(vptr, valid_opts);
 	xmlSchemaSetValidErrors(vptr, php_libxml_error_handler, php_libxml_error_handler, vptr);
+	dom_validate_ns_guard guard;
+	dom_validate_ns_guard_begin(&guard, docp);
 	is_valid = xmlSchemaValidateDoc(vptr, docp);
+	dom_validate_ns_guard_end(&guard);
 	xmlSchemaFree(sptr);
 	xmlSchemaFreeValidCtxt(vptr);
 	PHP_LIBXML_RESTORE_GLOBALS(validate);
@@ -2018,7 +2058,10 @@ static void dom_document_relaxNG_validate(INTERNAL_FUNCTION_PARAMETERS, int type
 	}
 
 	xmlRelaxNGSetValidErrors(vptr, php_libxml_error_handler, php_libxml_error_handler, vptr);
+	dom_validate_ns_guard guard;
+	dom_validate_ns_guard_begin(&guard, docp);
 	is_valid = xmlRelaxNGValidateDoc(vptr, docp);
+	dom_validate_ns_guard_end(&guard);
 	xmlRelaxNGFree(sptr);
 	xmlRelaxNGFreeValidCtxt(vptr);
 
@@ -2272,7 +2315,7 @@ static void dom_document_register_node_class(INTERNAL_FUNCTION_PARAMETERS, bool 
 		return;
 	}
 
-	zend_argument_error(NULL, 2, "must be a class name derived from %s or null, %s given", ZSTR_VAL(basece->name), ZSTR_VAL(ce->name));
+	zend_argument_error(NULL, 2, "must be a class name derived from %pS or null, %pS given", basece->name, ce->name);
 	RETURN_THROWS();
 }
 

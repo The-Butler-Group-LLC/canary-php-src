@@ -34,11 +34,9 @@
 
 #ifdef HAVE_LIBDL
 #ifdef PHP_WIN32
-#include "win32/param.h"
 #include "win32/winutil.h"
 #define GET_DL_ERROR()  php_win_err()
 #else
-#include <sys/param.h>
 #define GET_DL_ERROR()  DL_ERROR()
 #endif
 #endif
@@ -882,15 +880,15 @@ static zend_always_inline zend_string *zend_ffi_mangled_func_name(zend_string *n
 	switch (type->func.abi) {
 # ifdef HAVE_FFI_FASTCALL
 		case FFI_FASTCALL:
-			return strpprintf(0, "@%s@%zu", ZSTR_VAL(name), zend_ffi_arg_size(type));
+			return strpprintf(0, "@%pS@%zu", name, zend_ffi_arg_size(type));
 # endif
 # ifdef HAVE_FFI_STDCALL
 		case FFI_STDCALL:
-			return strpprintf(0, "_%s@%zu", ZSTR_VAL(name), zend_ffi_arg_size(type));
+			return strpprintf(0, "_%pS@%zu", name, zend_ffi_arg_size(type));
 # endif
 # ifdef HAVE_FFI_VECTORCALL_PARTIAL
 		case FFI_VECTORCALL_PARTIAL:
-			return strpprintf(0, "%s@@%zu", ZSTR_VAL(name), zend_ffi_arg_size(type));
+			return strpprintf(0, "%pS@@%zu", name, zend_ffi_arg_size(type));
 # endif
 		default:
 			/* other calling conventions don't apply name mangling */
@@ -918,9 +916,7 @@ static void zend_ffi_callback_hash_dtor(zval *zv) /* {{{ */
 	zend_ffi_callback_data *callback_data = Z_PTR_P(zv);
 
 	ffi_closure_free(callback_data->callback);
-	if (callback_data->fcc.function_handler->common.fn_flags & ZEND_ACC_CLOSURE) {
-		OBJ_RELEASE(ZEND_CLOSURE_OBJECT(callback_data->fcc.function_handler));
-	}
+	zend_fcc_dtor(&callback_data->fcc);
 	for (uint32_t i = 0; i < callback_data->arg_count; ++i) {
 		if (callback_data->arg_types[i]->type == FFI_TYPE_STRUCT) {
 			efree(callback_data->arg_types[i]);
@@ -936,18 +932,12 @@ static void zend_ffi_callback_hash_dtor(zval *zv) /* {{{ */
 static void zend_ffi_callback_trampoline(ffi_cif* cif, void* ret, void** args, void* data) /* {{{ */
 {
 	zend_ffi_callback_data *callback_data = (zend_ffi_callback_data*)data;
-	zend_fcall_info fci;
+	zval *params;
 	zend_ffi_type *ret_type;
 	zval retval;
 	ALLOCA_FLAG(use_heap)
 
-	fci.size = sizeof(zend_fcall_info);
-	ZVAL_UNDEF(&fci.function_name);
-	fci.retval = &retval;
-	fci.params = do_alloca(sizeof(zval) *callback_data->arg_count, use_heap);
-	fci.object = NULL;
-	fci.param_count = callback_data->arg_count;
-	fci.named_params = NULL;
+	params = do_alloca(sizeof(zval) *callback_data->arg_count, use_heap);
 
 	if (callback_data->type->func.args) {
 		int n = 0;
@@ -955,23 +945,18 @@ static void zend_ffi_callback_trampoline(ffi_cif* cif, void* ret, void** args, v
 
 		ZEND_HASH_PACKED_FOREACH_PTR(callback_data->type->func.args, arg_type) {
 			arg_type = ZEND_FFI_TYPE(arg_type);
-			zend_ffi_cdata_to_zval(NULL, args[n], arg_type, BP_VAR_R, &fci.params[n], (zend_ffi_flags)(arg_type->attr & ZEND_FFI_ATTR_CONST),
+			zend_ffi_cdata_to_zval(NULL, args[n], arg_type, BP_VAR_R, &params[n], (zend_ffi_flags)(arg_type->attr & ZEND_FFI_ATTR_CONST),
 					       false, false);
 			n++;
 		} ZEND_HASH_FOREACH_END();
 	}
 
-	ZVAL_UNDEF(&retval);
-	if (zend_call_function(&fci, &callback_data->fcc) != SUCCESS) {
-		zend_throw_error(zend_ffi_exception_ce, "Cannot call callback");
-	}
+	zend_call_known_fcc(&callback_data->fcc, &retval, callback_data->arg_count, params, NULL);
 
-	if (callback_data->arg_count) {
-		for (uint32_t n = 0; n < callback_data->arg_count; n++) {
-			zval_ptr_dtor(&fci.params[n]);
-		}
+	for (uint32_t n = 0; n < callback_data->arg_count; n++) {
+		zval_ptr_dtor(&params[n]);
 	}
-	free_alloca(fci.params, use_heap);
+	free_alloca(params, use_heap);
 
 	if (EG(exception)) {
 		zend_error_noreturn(E_ERROR, "Throwing from FFI callbacks is not allowed");
@@ -1021,7 +1006,7 @@ static void *zend_ffi_create_callback(zend_ffi_type *type, zval *value) /* {{{ *
 		return NULL;
 	}
 
-	if (!zend_is_callable_ex(value, NULL, 0, NULL, &fcc, &error)) {
+	if (!zend_is_callable(value, &fcc, &error)) {
 		zend_throw_error(zend_ffi_exception_ce, "Attempt to assign an invalid callback, %s", error);
 		return NULL;
 	}
@@ -1029,12 +1014,14 @@ static void *zend_ffi_create_callback(zend_ffi_type *type, zval *value) /* {{{ *
 	arg_count = type->func.args ? zend_hash_num_elements(type->func.args) : 0;
 	if (arg_count < fcc.function_handler->common.required_num_args) {
 		zend_throw_error(zend_ffi_exception_ce, "Attempt to assign an invalid callback, insufficient number of arguments");
+		zend_release_fcall_info_cache(&fcc);
 		return NULL;
 	}
 
 	callback = ffi_closure_alloc(sizeof(ffi_closure), &code);
 	if (!callback) {
 		zend_throw_error(zend_ffi_exception_ce, "Cannot allocate callback");
+		zend_release_fcall_info_cache(&fcc);
 		return NULL;
 	}
 
@@ -1061,6 +1048,7 @@ static void *zend_ffi_create_callback(zend_ffi_type *type, zval *value) /* {{{ *
 				}
 				efree(callback_data);
 				ffi_closure_free(callback);
+				zend_release_fcall_info_cache(&fcc);
 				return NULL;
 			}
 			n++;
@@ -1076,6 +1064,7 @@ static void *zend_ffi_create_callback(zend_ffi_type *type, zval *value) /* {{{ *
 		}
 		efree(callback_data);
 		ffi_closure_free(callback);
+		zend_release_fcall_info_cache(&fcc);
 		return NULL;
 	}
 
@@ -1097,6 +1086,7 @@ free_on_failure: ;
 		}
 		efree(callback_data);
 		ffi_closure_free(callback);
+		zend_release_fcall_info_cache(&fcc);
 		return NULL;
 	}
 
@@ -1106,9 +1096,7 @@ free_on_failure: ;
 	}
 	zend_hash_next_index_insert_ptr(FFI_G(callbacks), callback_data);
 
-	if (fcc.function_handler->common.fn_flags & ZEND_ACC_CLOSURE) {
-		GC_ADDREF(ZEND_CLOSURE_OBJECT(fcc.function_handler));
-	}
+	zend_fcc_addref(&callback_data->fcc);
 
 	return code;
 }
@@ -1251,13 +1239,13 @@ static zval *zend_ffi_cdata_read_field(zend_object *obj, zend_string *field_name
 			type = ZEND_FFI_TYPE(type->pointer.type);
 		}
 		if (UNEXPECTED(type->kind != ZEND_FFI_TYPE_STRUCT)) {
-			zend_throw_error(zend_ffi_exception_ce, "Attempt to read field '%s' of non C struct/union", ZSTR_VAL(field_name));
+			zend_throw_error(zend_ffi_exception_ce, "Attempt to read field '%pS' of non C struct/union", field_name);
 			return &EG(uninitialized_zval);
 		}
 
 		field = zend_hash_find_ptr(&type->record.fields, field_name);
 		if (UNEXPECTED(!field)) {
-			zend_throw_error(zend_ffi_exception_ce, "Attempt to read undefined field '%s' of C struct/union", ZSTR_VAL(field_name));
+			zend_throw_error(zend_ffi_exception_ce, "Attempt to read undefined field '%pS' of C struct/union", field_name);
 			return &EG(uninitialized_zval);
 		}
 
@@ -1320,20 +1308,20 @@ static zval *zend_ffi_cdata_write_field(zend_object *obj, zend_string *field_nam
 		field = *(cache_slot + 1);
 	} else {
 		if (UNEXPECTED(type == NULL)) {
-			zend_throw_error(zend_ffi_exception_ce, "Attempt to assign field '%s' to uninitialized FFI\\CData object", ZSTR_VAL(field_name));
+			zend_throw_error(zend_ffi_exception_ce, "Attempt to assign field '%pS' to uninitialized FFI\\CData object", field_name);
 			return value;
 		}
 		if (type->kind == ZEND_FFI_TYPE_POINTER) {
 			type = ZEND_FFI_TYPE(type->pointer.type);
 		}
 		if (UNEXPECTED(type->kind != ZEND_FFI_TYPE_STRUCT)) {
-			zend_throw_error(zend_ffi_exception_ce, "Attempt to assign field '%s' of non C struct/union", ZSTR_VAL(field_name));
+			zend_throw_error(zend_ffi_exception_ce, "Attempt to assign field '%pS' of non C struct/union", field_name);
 			return value;
 		}
 
 		field = zend_hash_find_ptr(&type->record.fields, field_name);
 		if (UNEXPECTED(!field)) {
-			zend_throw_error(zend_ffi_exception_ce, "Attempt to assign undefined field '%s' of C struct/union", ZSTR_VAL(field_name));
+			zend_throw_error(zend_ffi_exception_ce, "Attempt to assign undefined field '%pS' of C struct/union", field_name);
 			return value;
 		}
 
@@ -1367,7 +1355,7 @@ static zval *zend_ffi_cdata_write_field(zend_object *obj, zend_string *field_nam
 		zend_throw_error(zend_ffi_exception_ce, "Attempt to assign read-only location");
 		return value;
 	} else if (UNEXPECTED(field->is_const)) {
-		zend_throw_error(zend_ffi_exception_ce, "Attempt to assign read-only field '%s'", ZSTR_VAL(field_name));
+		zend_throw_error(zend_ffi_exception_ce, "Attempt to assign read-only field '%pS'", field_name);
 		return value;
 	}
 
@@ -1694,7 +1682,7 @@ static ZEND_COLD void zend_ffi_pass_incompatible(const zval *arg, const zend_ffi
 
 	buf1.start = buf1.end = buf1.buf + ((MAX_TYPE_NAME_LEN * 3) / 4);
 	if (!zend_ffi_ctype_name(&buf1, type)) {
-		zend_throw_error(zend_ffi_exception_ce, "Passing incompatible argument %d of C function '%s'", n + 1, ZSTR_VAL(EX(func)->internal_function.function_name));
+		zend_throw_error(zend_ffi_exception_ce, "Passing incompatible argument %d of C function '%pS'", n + 1, EX(func)->internal_function.function_name);
 	} else {
 		*buf1.end = 0;
 		if (Z_TYPE_P(arg) == IS_OBJECT && Z_OBJCE_P(arg) == zend_ffi_cdata_ce) {
@@ -1703,13 +1691,13 @@ static ZEND_COLD void zend_ffi_pass_incompatible(const zval *arg, const zend_ffi
 			type = ZEND_FFI_TYPE(cdata->type);
 			buf2.start = buf2.end = buf2.buf + ((MAX_TYPE_NAME_LEN * 3) / 4);
 			if (!zend_ffi_ctype_name(&buf2, type)) {
-				zend_throw_error(zend_ffi_exception_ce, "Passing incompatible argument %d of C function '%s', expecting '%s'", n + 1, ZSTR_VAL(EX(func)->internal_function.function_name), buf1.start);
+				zend_throw_error(zend_ffi_exception_ce, "Passing incompatible argument %d of C function '%pS', expecting '%s'", n + 1, EX(func)->internal_function.function_name, buf1.start);
 			} else {
 				*buf2.end = 0;
-				zend_throw_error(zend_ffi_exception_ce, "Passing incompatible argument %d of C function '%s', expecting '%s', found '%s'", n + 1, ZSTR_VAL(EX(func)->internal_function.function_name), buf1.start, buf2.start);
+				zend_throw_error(zend_ffi_exception_ce, "Passing incompatible argument %d of C function '%pS', expecting '%s', found '%s'", n + 1, EX(func)->internal_function.function_name, buf1.start, buf2.start);
 			}
 		} else {
-			zend_throw_error(zend_ffi_exception_ce, "Passing incompatible argument %d of C function '%s', expecting '%s', found PHP '%s'", n + 1, ZSTR_VAL(EX(func)->internal_function.function_name), buf1.start, zend_zval_value_name(arg));
+			zend_throw_error(zend_ffi_exception_ce, "Passing incompatible argument %d of C function '%pS', expecting '%s', found PHP '%s'", n + 1, EX(func)->internal_function.function_name, buf1.start, zend_zval_value_name(arg));
 		}
 	}
 }
@@ -2175,7 +2163,7 @@ static zend_result zend_ffi_cdata_get_closure(zend_object *obj, zend_class_entry
 	if (EXPECTED(EG(trampoline).common.function_name == NULL)) {
 		func = &EG(trampoline);
 	} else {
-		func = ecalloc(1, sizeof(zend_internal_function));
+		func = (zend_function *)(uintptr_t)ecalloc(1, sizeof(zend_internal_function));
 	}
 	func->type = ZEND_INTERNAL_FUNCTION;
 	func->common.arg_flags[0] = 0;
@@ -2503,7 +2491,7 @@ static zval *zend_ffi_read_var(zend_object *obj, zend_string *var_name, int read
 		}
 	}
 	if (!sym) {
-		zend_throw_error(zend_ffi_exception_ce, "Attempt to read undefined C variable '%s'", ZSTR_VAL(var_name));
+		zend_throw_error(zend_ffi_exception_ce, "Attempt to read undefined C variable '%pS'", var_name);
 		return &EG(uninitialized_zval);
 	}
 
@@ -2547,12 +2535,12 @@ static zval *zend_ffi_write_var(zend_object *obj, zend_string *var_name, zval *v
 		}
 	}
 	if (!sym) {
-		zend_throw_error(zend_ffi_exception_ce, "Attempt to assign undefined C variable '%s'", ZSTR_VAL(var_name));
+		zend_throw_error(zend_ffi_exception_ce, "Attempt to assign undefined C variable '%pS'", var_name);
 		return value;
 	}
 
 	if (sym->is_const) {
-		zend_throw_error(zend_ffi_exception_ce, "Attempt to assign read-only C variable '%s'", ZSTR_VAL(var_name));
+		zend_throw_error(zend_ffi_exception_ce, "Attempt to assign read-only C variable '%pS'", var_name);
 		return value;
 	}
 
@@ -2772,7 +2760,7 @@ static ZEND_FUNCTION(ffi_trampoline) /* {{{ */
 	arg_count = type->func.args ? zend_hash_num_elements(type->func.args) : 0;
 	if (type->attr & ZEND_FFI_ATTR_VARIADIC) {
 		if (arg_count > EX_NUM_ARGS()) {
-			zend_throw_error(zend_ffi_exception_ce, "Incorrect number of arguments for C function '%s', expecting at least %d parameter%s", ZSTR_VAL(EX(func)->internal_function.function_name), arg_count, (arg_count != 1) ? "s" : "");
+			zend_throw_error(zend_ffi_exception_ce, "Incorrect number of arguments for C function '%pS', expecting at least %d parameter%s", EX(func)->internal_function.function_name, arg_count, (arg_count != 1) ? "s" : "");
 			goto exit;
 		}
 		if (EX_NUM_ARGS()) {
@@ -2817,7 +2805,7 @@ static ZEND_FUNCTION(ffi_trampoline) /* {{{ */
 		}
 	} else {
 		if (arg_count != EX_NUM_ARGS()) {
-			zend_throw_error(zend_ffi_exception_ce, "Incorrect number of arguments for C function '%s', expecting exactly %d parameter%s", ZSTR_VAL(EX(func)->internal_function.function_name), arg_count, (arg_count != 1) ? "s" : "");
+			zend_throw_error(zend_ffi_exception_ce, "Incorrect number of arguments for C function '%pS', expecting exactly %d parameter%s", EX(func)->internal_function.function_name, arg_count, (arg_count != 1) ? "s" : "");
 			goto exit;
 		}
 		if (EX_NUM_ARGS()) {
@@ -2945,7 +2933,7 @@ static zend_function *zend_ffi_get_func(zend_object **obj, zend_string *name, co
 		}
 	}
 	if (!sym) {
-		zend_throw_error(zend_ffi_exception_ce, "Attempt to call undefined C function '%s'", ZSTR_VAL(name));
+		zend_throw_error(zend_ffi_exception_ce, "Attempt to call undefined C function '%pS'", name);
 		return NULL;
 	}
 
@@ -2955,7 +2943,7 @@ static zend_function *zend_ffi_get_func(zend_object **obj, zend_string *name, co
 	if (EXPECTED(EG(trampoline).common.function_name == NULL)) {
 		func = &EG(trampoline);
 	} else {
-		func = ecalloc(1, sizeof(zend_internal_function));
+		func = (zend_function *)(uintptr_t)ecalloc(1, sizeof(zend_internal_function));
 	}
 	func->common.type = ZEND_INTERNAL_FUNCTION;
 	func->common.arg_flags[0] = 0;
@@ -3072,13 +3060,13 @@ ZEND_METHOD(FFI, cdef) /* {{{ */
 			char *err = GET_DL_ERROR();
 #ifdef PHP_WIN32
 			if (err && err[0]) {
-				zend_throw_error(zend_ffi_exception_ce, "Failed loading '%s' (%s)", ZSTR_VAL(lib), err);
+				zend_throw_error(zend_ffi_exception_ce, "Failed loading '%pS' (%s)", lib, err);
 				php_win32_error_msg_free(err);
 			} else {
-				zend_throw_error(zend_ffi_exception_ce, "Failed loading '%s' (Unknown reason)", ZSTR_VAL(lib));
+				zend_throw_error(zend_ffi_exception_ce, "Failed loading '%pS' (Unknown reason)", lib);
 			}
 #else
-			zend_throw_error(zend_ffi_exception_ce, "Failed loading '%s' (%s)", ZSTR_VAL(lib), err);
+			zend_throw_error(zend_ffi_exception_ce, "Failed loading '%pS' (%s)", lib, err);
 			GET_DL_ERROR(); /* free the buffer storing the error */
 #endif
 			RETURN_THROWS();
@@ -3111,7 +3099,7 @@ ZEND_METHOD(FFI, cdef) /* {{{ */
 				if (sym->kind == ZEND_FFI_SYM_VAR) {
 					addr = DL_FETCH_SYMBOL(handle, ZSTR_VAL(name));
 					if (!addr) {
-						zend_throw_error(zend_ffi_exception_ce, "Failed resolving C variable '%s'", ZSTR_VAL(name));
+						zend_throw_error(zend_ffi_exception_ce, "Failed resolving C variable '%pS'", name);
 						goto cleanup;
 					}
 					sym->addr = addr;
@@ -3121,7 +3109,7 @@ ZEND_METHOD(FFI, cdef) /* {{{ */
 					addr = DL_FETCH_SYMBOL(handle, ZSTR_VAL(mangled_name));
 					zend_string_release(mangled_name);
 					if (!addr) {
-						zend_throw_error(zend_ffi_exception_ce, "Failed resolving C function '%s'", ZSTR_VAL(name));
+						zend_throw_error(zend_ffi_exception_ce, "Failed resolving C function '%pS'", name);
 						goto cleanup;
 					}
 					sym->addr = addr;
@@ -3462,9 +3450,9 @@ static zend_ffi *zend_ffi_load(const char *filename, bool preload) /* {{{ */
 				addr = DL_FETCH_SYMBOL(handle, ZSTR_VAL(name));
 				if (!addr) {
 					if (preload) {
-						zend_error(E_WARNING, "FFI: failed pre-loading '%s', cannot resolve C variable '%s'", filename, ZSTR_VAL(name));
+						zend_error(E_WARNING, "FFI: failed pre-loading '%s', cannot resolve C variable '%pS'", filename, name);
 					} else {
-						zend_throw_error(zend_ffi_exception_ce, "Failed resolving C variable '%s'", ZSTR_VAL(name));
+						zend_throw_error(zend_ffi_exception_ce, "Failed resolving C variable '%pS'", name);
 					}
 					if (lib) {
 						DL_UNLOAD(handle);
@@ -3479,9 +3467,9 @@ static zend_ffi *zend_ffi_load(const char *filename, bool preload) /* {{{ */
 				zend_string_release(mangled_name);
 				if (!addr) {
 					if (preload) {
-						zend_error(E_WARNING, "failed pre-loading '%s', cannot resolve C function '%s'", filename, ZSTR_VAL(name));
+						zend_error(E_WARNING, "failed pre-loading '%s', cannot resolve C function '%pS'", filename, name);
 					} else {
-						zend_throw_error(zend_ffi_exception_ce, "Failed resolving C function '%s'", ZSTR_VAL(name));
+						zend_throw_error(zend_ffi_exception_ce, "Failed resolving C function '%pS'", name);
 					}
 					if (lib) {
 						DL_UNLOAD(handle);
@@ -3502,7 +3490,7 @@ static zend_ffi *zend_ffi_load(const char *filename, bool preload) /* {{{ */
 							zend_ffi_type_dtor(type);
 						}
 					} else {
-						zend_error(E_WARNING, "FFI: failed pre-loading '%s', redefinition of '%s'", filename, ZSTR_VAL(name));
+						zend_error(E_WARNING, "FFI: failed pre-loading '%s', redefinition of '%pS'", filename, name);
 						if (lib) {
 							DL_UNLOAD(handle);
 						}
@@ -3527,7 +3515,7 @@ static zend_ffi *zend_ffi_load(const char *filename, bool preload) /* {{{ */
 							zend_ffi_type_dtor(type);
 						}
 					} else {
-						zend_error(E_WARNING, "FFI: failed pre-loading '%s', redefinition of '%s %s'", filename, zend_ffi_tag_kind_name[tag->kind], ZSTR_VAL(name));
+						zend_error(E_WARNING, "FFI: failed pre-loading '%s', redefinition of '%s %pS'", filename, zend_ffi_tag_kind_name[tag->kind], name);
 						if (lib) {
 							DL_UNLOAD(handle);
 						}
@@ -3659,7 +3647,7 @@ ZEND_METHOD(FFI, scope) /* {{{ */
 	}
 
 	if (!scope) {
-		zend_throw_error(zend_ffi_exception_ce, "Failed loading scope '%s'", ZSTR_VAL(scope_name));
+		zend_throw_error(zend_ffi_exception_ce, "Failed loading scope '%pS'", scope_name);
 		RETURN_THROWS();
 	}
 
@@ -3685,18 +3673,22 @@ void zend_ffi_cleanup_dcl(zend_ffi_dcl *dcl) /* {{{ */
 static void zend_ffi_throw_parser_error(const char *format, ...) /* {{{ */
 {
 	va_list va;
-	char *message = NULL;
 
-	va_start(va, format);
-	zend_vspprintf(&message, 0, format, va);
-
-	if (EG(current_execute_data)) {
-		zend_throw_exception(zend_ffi_parser_exception_ce, message, 0);
-	} else {
-		zend_error(E_WARNING, "FFI Parser: %s", message);
+	if (FFI_G(parse_failed)) {
+		/* An error was already reported, parsing only continues to unwind cleanly */
+		return;
 	}
 
-	efree(message);
+	va_start(va, format);
+	zend_string *message = zend_vstrpprintf(0, format, va);
+
+	if (EG(current_execute_data)) {
+		zend_throw_exception_ex(zend_ffi_parser_exception_ce, 0, "%pS", message);
+	} else {
+		zend_error(E_WARNING, "FFI Parser: %pS", message);
+	}
+
+	zend_string_release(message);
 	va_end(va);
 }
 /* }}} */
@@ -3721,11 +3713,11 @@ static zend_result zend_ffi_validate_incomplete_type(const zend_ffi_type *type, 
 			ZEND_HASH_MAP_FOREACH_STR_KEY_PTR(FFI_G(tags), key, tag) {
 				if (ZEND_FFI_TYPE(tag->type) == type) {
 					if (type->kind == ZEND_FFI_TYPE_ENUM) {
-						zend_ffi_throw_parser_error("Incomplete enum \"%s\" at line %d", ZSTR_VAL(key), FFI_G(line));
+						zend_ffi_throw_parser_error("Incomplete enum \"%pS\" at line %d", key, FFI_G(line));
 					} else if (type->attr & ZEND_FFI_ATTR_UNION) {
-						zend_ffi_throw_parser_error("Incomplete union \"%s\" at line %d", ZSTR_VAL(key), FFI_G(line));
+						zend_ffi_throw_parser_error("Incomplete union \"%pS\" at line %d", key, FFI_G(line));
 					} else {
-						zend_ffi_throw_parser_error("Incomplete struct \"%s\" at line %d", ZSTR_VAL(key), FFI_G(line));
+						zend_ffi_throw_parser_error("Incomplete struct \"%pS\" at line %d", key, FFI_G(line));
 					}
 					return FAILURE;
 				}
@@ -3737,7 +3729,7 @@ static zend_result zend_ffi_validate_incomplete_type(const zend_ffi_type *type, 
 
 			ZEND_HASH_MAP_FOREACH_STR_KEY_PTR(FFI_G(symbols), key, sym) {
 				if (type == ZEND_FFI_TYPE(sym->type)) {
-					zend_ffi_throw_parser_error("Incomplete C type %s at line %d", ZSTR_VAL(key), FFI_G(line));
+					zend_ffi_throw_parser_error("Incomplete C type %pS at line %d", key, FFI_G(line));
 					return FAILURE;
 				}
 			} ZEND_HASH_FOREACH_END();
@@ -5124,14 +5116,14 @@ static char *zend_ffi_parse_directives(const char *filename, char *code_pos, cha
 
 static ZEND_COLD zend_function *zend_fake_get_constructor(zend_object *object) /* {{{ */
 {
-	zend_throw_error(NULL, "Instantiation of %s is not allowed", ZSTR_VAL(object->ce->name));
+	zend_throw_error(NULL, "Instantiation of %pS is not allowed", object->ce->name);
 	return NULL;
 }
 /* }}} */
 
 static ZEND_COLD zend_never_inline void zend_bad_array_access(zend_class_entry *ce) /* {{{ */
 {
-	zend_throw_error(NULL, "Cannot use object of type %s as array", ZSTR_VAL(ce->name));
+	zend_throw_error(NULL, "Cannot use object of type %pS as array", ce->name);
 }
 /* }}} */
 
@@ -5163,7 +5155,7 @@ static ZEND_COLD void zend_fake_unset_dimension(zend_object *obj, zval *offset) 
 
 static ZEND_COLD zend_never_inline void zend_bad_property_access(zend_class_entry *ce) /* {{{ */
 {
-	zend_throw_error(NULL, "Cannot access property of object of type %s", ZSTR_VAL(ce->name));
+	zend_throw_error(NULL, "Cannot access property of object of type %pS", ce->name);
 }
 /* }}} */
 
@@ -5203,7 +5195,7 @@ static zval *zend_fake_get_property_ptr_ptr(zend_object *obj, zend_string *membe
 static ZEND_COLD zend_function *zend_fake_get_method(zend_object **obj_ptr, zend_string *method_name, const zval *key) /* {{{ */
 {
 	zend_class_entry *ce = (*obj_ptr)->ce;
-	zend_throw_error(NULL, "Object of type %s does not support method calls", ZSTR_VAL(ce->name));
+	zend_throw_error(NULL, "Object of type %pS does not support method calls", ce->name);
 	return NULL;
 }
 /* }}} */
@@ -5762,20 +5754,21 @@ ZEND_GET_MODULE(ffi)
 /* parser callbacks */
 void zend_ffi_parser_error(const char *format, ...) /* {{{ */
 {
-	va_list va;
-	char *message = NULL;
+	if (!FFI_G(parse_failed)) {
+		va_list va;
 
-	va_start(va, format);
-	zend_vspprintf(&message, 0, format, va);
+		va_start(va, format);
+		zend_string *message = zend_vstrpprintf(0, format, va);
 
-	if (EG(current_execute_data)) {
-		zend_throw_exception(zend_ffi_parser_exception_ce, message, 0);
-	} else {
-		zend_error(E_WARNING, "FFI Parser: %s", message);
+		if (EG(current_execute_data)) {
+			zend_throw_exception_ex(zend_ffi_parser_exception_ce, 0, "%pS", message);
+		} else {
+			zend_error(E_WARNING, "FFI Parser: %pS", message);
+		}
+
+		zend_string_release(message);
+		va_end(va);
 	}
-
-	efree(message);
-	va_end(va);
 
 	LONGJMP(FFI_G(bailout), FAILURE);
 }
@@ -5861,10 +5854,16 @@ static void zend_ffi_finalize_type(zend_ffi_dcl *dcl) /* {{{ */
 			case ZEND_FFI_DCL_FLOAT|ZEND_FFI_DCL_COMPLEX:
 			case ZEND_FFI_DCL_DOUBLE|ZEND_FFI_DCL_COMPLEX:
 			case ZEND_FFI_DCL_DOUBLE|ZEND_FFI_DCL_LONG|ZEND_FFI_DCL_COMPLEX:
-				zend_ffi_parser_error("Unsupported type _Complex at line %d", FFI_G(line));
+				zend_ffi_throw_parser_error("Unsupported type _Complex at line %d", FFI_G(line));
+				/* Do not bail out here: callers may hold memory that is not owned by dcl yet.
+				 * Continue with a placeholder type, zend_ffi_parse_*() report the failure. */
+				FFI_G(parse_failed) = 1;
+				dcl->type = (zend_ffi_type*)&zend_ffi_type_sint32;
 				break;
 			default:
-				zend_ffi_parser_error("Unsupported type specifier combination at line %d", FFI_G(line));
+				zend_ffi_throw_parser_error("Unsupported type specifier combination at line %d", FFI_G(line));
+				FFI_G(parse_failed) = 1;
+				dcl->type = (zend_ffi_type*)&zend_ffi_type_sint32;
 				break;
 		}
 		dcl->flags &= ~ZEND_FFI_DCL_TYPE_SPECIFIERS;
@@ -6229,7 +6228,7 @@ void zend_ffi_add_anonymous_field(zend_ffi_dcl *struct_dcl, zend_ffi_dcl *field_
 			if (!zend_hash_add_ptr(&struct_type->record.fields, key, new_field)) {
 				zend_ffi_type_dtor(new_field->type);
 				pefree(new_field, FFI_G(persistent));
-				zend_ffi_parser_error("Duplicate field name \"%s\" at line %d", ZSTR_VAL(key), FFI_G(line));
+				zend_ffi_parser_error("Duplicate field name \"%pS\" at line %d", key, FFI_G(line));
 				return;
 			}
 		} else {

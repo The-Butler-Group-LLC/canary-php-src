@@ -11,10 +11,10 @@ runs:
         mysql --port=3306 --user=root --password="" -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'Password12!'; FLUSH PRIVILEGES;"
     - name: Setup MSSQL
       shell: pwsh
-      run: |
-        choco install sql-server-express -y --no-progress --install-arguments="/SECURITYMODE=SQL /SAPWD=Password12!"
+      run: .github/scripts/windows/setup-mssql.ps1
     - name: Setup PostgreSQL
       shell: pwsh
       run: |
-        Set-Service -Name "postgresql-x64-14" -StartupType manual -Status Running
+        $postgresService = if ($env:PHP_BUILD_CRT -eq "vs18") { "postgresql-x64-17" } else { "postgresql-x64-14" }
+        Set-Service -Name $postgresService -StartupType manual -Status Running
         pwsh -Command { $env:PGPASSWORD="root"; & "$env:PGBIN\psql" -U postgres -c "ALTER USER postgres WITH PASSWORD 'Password12!';" }

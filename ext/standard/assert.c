@@ -195,8 +195,7 @@ PHP_FUNCTION(assert)
 	}
 
 	if (description_obj) {
-		GC_ADDREF(description_obj);
-		zend_throw_exception_internal(description_obj);
+		zend_throw_exception_internal(zend_object_copy(description_obj));
 		RETURN_THROWS();
 	}
 
@@ -245,7 +244,9 @@ PHP_FUNCTION(assert)
 			 * exception so we can avoid bailout and use unwind_exit. */
 			zend_exception_error(EG(exception), E_WARNING);
 		}
-		zend_throw_unwind_exit();
+		if (!EG(exception)) {
+			zend_throw_unwind_exit();
+		}
 		RETURN_THROWS();
 	} else {
 		RETURN_FALSE;

@@ -42,6 +42,7 @@ PHP_MINFO_FUNCTION(basic);
 
 ZEND_API void php_get_highlight_struct(zend_syntax_highlighter_ini *syntax_highlighter_ini);
 
+PHP_MINIT_FUNCTION(poll);
 PHP_MINIT_FUNCTION(user_filters);
 PHP_RSHUTDOWN_FUNCTION(user_filters);
 PHP_RSHUTDOWN_FUNCTION(browscap);
@@ -129,6 +130,7 @@ PHPAPI extern bool register_user_shutdown_function(const char *function_name, si
 PHPAPI extern bool remove_user_shutdown_function(const char *function_name, size_t function_len);
 PHPAPI extern bool append_user_shutdown_function(php_shutdown_function_entry *shutdown_function_entry);
 
+PHPAPI void php_basic_early_rinit(void);
 PHPAPI void php_call_shutdown_functions(void);
 PHPAPI void php_free_shutdown_functions(void);
 

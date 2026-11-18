@@ -19,7 +19,6 @@
 #include <unicode/calendar.h>
 #include <unicode/datefmt.h>
 
-extern "C" {
 #include <unicode/ustring.h>
 #include <unicode/udat.h>
 #include <unicode/uloc.h>
@@ -32,7 +31,6 @@ extern "C" {
 #define USE_TIMEZONE_POINTER 1
 #include "../timezone/timezone_class.h"
 #include "../intl_convert.h"
-}
 
 #include "dateformat_helpers.h"
 #include "zend_exceptions.h"
@@ -99,7 +97,7 @@ static zend_result datefmt_ctor(INTERNAL_FUNCTION_PARAMETERS)
 		return FAILURE;
 	}
 	if (date_type == UDAT_PATTERN && time_type != UDAT_PATTERN) {
-		intl_error_set(NULL, U_ILLEGAL_ARGUMENT_ERROR, "time format must be UDAT_PATTERN if date format is UDAT_PATTERN");
+		intl_error_set(NULL, U_ILLEGAL_ARGUMENT_ERROR, "datefmt_create: time format must be IntlDateFormatter::PATTERN if date format is IntlDateFormatter::PATTERN");
 		return FAILURE;
 	}
 
@@ -131,7 +129,7 @@ static zend_result datefmt_ctor(INTERNAL_FUNCTION_PARAMETERS)
 
 	if (explicit_tz || calendar_owned ) {
 		//we have an explicit time zone or a non-object calendar
-		timezone = timezone_process_timezone_argument(timezone_object, timezone_string, INTL_DATA_ERROR_P(dfo));
+		timezone = timezone_process_timezone_argument(timezone_object, timezone_string, INTL_DATA_ERROR_P(dfo), 4);
 		if (timezone == nullptr) {
 			goto error;
 		}

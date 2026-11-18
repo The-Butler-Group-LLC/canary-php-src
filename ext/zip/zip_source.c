@@ -124,10 +124,12 @@ static zip_int64_t php_zip_string_cb(void *userdata, void *data, zip_uint64_t le
 		}
 
 		case ZIP_SOURCE_TELL:
+#if SIZE_MAX > ZIP_INT64_MAX
 			if (ctx->in_offset > ZIP_INT64_MAX) {
 				zip_error_set(&ctx->error, ZIP_ER_TELL, EOVERFLOW);
 				return -1;
 			}
+#endif
 			return (zip_int64_t)ctx->in_offset;
 
 		/* Write ops */
@@ -155,6 +157,7 @@ static zip_int64_t php_zip_string_cb(void *userdata, void *data, zip_uint64_t le
 			ctx->in_str = ctx->out_str;
 			ctx->out_str = ZSTR_EMPTY_ALLOC();
 			if (ctx->dest) {
+				zend_string_release(*(ctx->dest));
 				*(ctx->dest) = zend_string_copy(ctx->in_str);
 			}
 			return 0;
@@ -175,10 +178,12 @@ static zip_int64_t php_zip_string_cb(void *userdata, void *data, zip_uint64_t le
 		}
 
 		case ZIP_SOURCE_TELL_WRITE:
+#if SIZE_MAX > ZIP_INT64_MAX
 			if (ctx->out_offset > ZIP_INT64_MAX) {
 				zip_error_set(&ctx->error, ZIP_ER_TELL, EOVERFLOW);
 				return -1;
 			}
+#endif
 			return (zip_int64_t)ctx->out_offset;
 
 		case ZIP_SOURCE_REMOVE:
@@ -200,5 +205,10 @@ zip_source_t * php_zip_create_string_source(zend_string *str, zend_string **dest
 	ctx->out_str = ZSTR_EMPTY_ALLOC();
 	ctx->dest = dest;
 	ctx->mtime = time(NULL);
+
+	if (dest) {
+		*dest = zend_string_copy(str);
+	}
+
 	return zip_source_function_create(php_zip_string_cb, (void*)ctx, err);
 }

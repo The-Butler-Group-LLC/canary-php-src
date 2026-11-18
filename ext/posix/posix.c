@@ -83,6 +83,15 @@ static PHP_MINIT_FUNCTION(posix)
 }
 /* }}} */
 
+/* {{{ PHP_RSHUTDOWN_FUNCTION(posix) */
+static PHP_RSHUTDOWN_FUNCTION(posix)
+{
+	POSIX_G(last_error) = 0;
+
+	return SUCCESS;
+}
+/* }}} */
+
 /* {{{ posix_module_entry */
 zend_module_entry posix_module_entry = {
 	STANDARD_MODULE_HEADER,
@@ -91,7 +100,7 @@ zend_module_entry posix_module_entry = {
 	PHP_MINIT(posix),
 	NULL,
 	NULL,
-	NULL,
+	PHP_RSHUTDOWN(posix),
 	PHP_MINFO(posix),
 	PHP_POSIX_VERSION,
 	PHP_MODULE_GLOBALS(posix),
@@ -688,7 +697,11 @@ static void php_posix_group_to_array(struct group *g, zval *array_group) /* {{{ 
 	array_init(&array_members);
 	zend_hash_real_init_packed(Z_ARRVAL(array_members));
 
-	add_assoc_string(array_group, "name", g->gr_name);
+	if (g->gr_name) {
+		add_assoc_string(array_group, "name", g->gr_name);
+	} else {
+		add_assoc_null(array_group, "name");
+	}
 	if (g->gr_passwd) {
 		add_assoc_string(array_group, "passwd", g->gr_passwd);
 	} else {
@@ -740,15 +753,6 @@ PHP_FUNCTION(posix_access)
 		efree(path);
 		POSIX_G(last_error) = EPERM;
 		RETURN_FALSE;
-	}
-
-	if (mode < 0 || (mode & ~(F_OK | R_OK | W_OK | X_OK))) {
-		zend_argument_value_error(
-			2,
-			"must be a bitmask of POSIX_F_OK, POSIX_R_OK, POSIX_W_OK, and POSIX_X_OK"
-		);
-		efree(path);
-		RETURN_THROWS();
 	}
 
 	ret = access(path, mode);
@@ -926,13 +930,33 @@ static void php_posix_passwd_to_array(struct passwd *pw, zval *return_value) /* 
 {
 	ZEND_ASSERT(Z_TYPE_P(return_value) == IS_ARRAY);
 
-	add_assoc_string(return_value, "name",      pw->pw_name);
-	add_assoc_string(return_value, "passwd",    pw->pw_passwd);
-	add_assoc_long  (return_value, "uid",       pw->pw_uid);
-	add_assoc_long  (return_value, "gid",		pw->pw_gid);
-	add_assoc_string(return_value, "gecos",     pw->pw_gecos);
-	add_assoc_string(return_value, "dir",       pw->pw_dir);
-	add_assoc_string(return_value, "shell",     pw->pw_shell);
+	if (pw->pw_name) {
+		add_assoc_string(return_value, "name", pw->pw_name);
+	} else {
+		add_assoc_null(return_value, "name");
+	}
+	if (pw->pw_passwd) {
+		add_assoc_string(return_value, "passwd", pw->pw_passwd);
+	} else {
+		add_assoc_null(return_value, "passwd");
+	}
+	add_assoc_long(return_value, "uid", pw->pw_uid);
+	add_assoc_long(return_value, "gid", pw->pw_gid);
+	if (pw->pw_gecos) {
+		add_assoc_string(return_value, "gecos", pw->pw_gecos);
+	} else {
+		add_assoc_null(return_value, "gecos");
+	}
+	if (pw->pw_dir) {
+		add_assoc_string(return_value, "dir", pw->pw_dir);
+	} else {
+		add_assoc_null(return_value, "dir");
+	}
+	if (pw->pw_shell) {
+		add_assoc_string(return_value, "shell", pw->pw_shell);
+	} else {
+		add_assoc_null(return_value, "shell");
+	}
 }
 /* }}} */
 
@@ -1200,7 +1224,14 @@ PHP_FUNCTION(posix_getrlimit)
 #endif /* HAVE_GETRLIMIT */
 
 #ifdef HAVE_SETRLIMIT
-/* {{{ Set system resource consumption limits (POSIX.1-2001) */
+/* Solaris defines RLIM_INFINITY as (rlim_t)-3, so POSIX_RLIMIT_INFINITY is below -1 */
+#ifdef __sun
+# define POSIX_RLIM_VALID(v) ((v) >= -1 || (v) == (zend_long) RLIM_INFINITY)
+#else
+# define POSIX_RLIM_VALID(v) ((v) >= -1)
+#endif
+
+/* Set system resource consumption limits (POSIX.1-2001) */
 PHP_FUNCTION(posix_setrlimit)
 {
 	struct rlimit rl;
@@ -1212,13 +1243,13 @@ PHP_FUNCTION(posix_setrlimit)
 		Z_PARAM_LONG(max)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (cur < -1) {
-		zend_argument_value_error(2, "must be greater or equal to -1");
+	if (!POSIX_RLIM_VALID(cur)) {
+		zend_argument_value_error(2, "must be greater than or equal to -1, or POSIX_RLIMIT_INFINITY");
 		RETURN_THROWS();
 	}
 
-	if (max < -1) {
-		zend_argument_value_error(3, "must be greater or equal to -1");
+	if (!POSIX_RLIM_VALID(max)) {
+		zend_argument_value_error(3, "must be greater than or equal to -1, or POSIX_RLIMIT_INFINITY");
 		RETURN_THROWS();
 	}
 
@@ -1237,7 +1268,6 @@ PHP_FUNCTION(posix_setrlimit)
 
 	RETURN_TRUE;
 }
-/* }}} */
 
 #endif /* HAVE_SETRLIMIT */
 

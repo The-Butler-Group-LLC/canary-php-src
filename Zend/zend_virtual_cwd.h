@@ -85,7 +85,7 @@ typedef unsigned short mode_t;
 #define IS_UNC_PATH(path, len) \
 	(len >= 2 && IS_SLASH(path[0]) && IS_SLASH(path[1]))
 #define IS_ABSOLUTE_PATH(path, len) \
-	(len >= 2 && (/* is local */isalpha(path[0]) && path[1] == ':' || /* is UNC */IS_SLASH(path[0]) && IS_SLASH(path[1])))
+	(len >= 2 && (/* is local */isalpha((unsigned char)(path)[0]) && path[1] == ':' || /* is UNC */IS_SLASH(path[0]) && IS_SLASH(path[1])))
 
 #else
 #ifdef HAVE_DIRENT_H
@@ -243,12 +243,12 @@ typedef struct _virtual_cwd_globals {
 
 #ifdef ZTS
 extern ts_rsrc_id cwd_globals_id;
-extern size_t cwd_globals_offset;
-# define CWDG(v) ZEND_TSRMG_FAST(cwd_globals_offset, virtual_cwd_globals *, v)
+extern TSRM_TLS TSRM_TLS_MODEL_ATTR virtual_cwd_globals cwd_globals;
 #else
 extern virtual_cwd_globals cwd_globals;
-# define CWDG(v) (cwd_globals.v)
 #endif
+
+#define CWDG(v) (cwd_globals.v)
 
 CWD_API void realpath_cache_clean(void);
 CWD_API void realpath_cache_del(const char *path, size_t path_len);

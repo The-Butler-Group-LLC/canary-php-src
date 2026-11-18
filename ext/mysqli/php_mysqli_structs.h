@@ -61,9 +61,7 @@ typedef struct _mysqli_object {
 	zend_object 		zo;
 } mysqli_object; /* extends zend_object */
 
-static inline mysqli_object *php_mysqli_fetch_object(zend_object *obj) {
-	return (mysqli_object *)((char*)(obj) - offsetof(mysqli_object, zo));
-}
+#define php_mysqli_fetch_object(obj) ZEND_CONTAINER_OF(obj, mysqli_object, zo)
 
 #define Z_MYSQLI_P(zv) php_mysqli_fetch_object(Z_OBJ_P((zv)))
 
@@ -162,12 +160,12 @@ extern void php_mysqli_fetch_into_hash_aux(zval *return_value, MYSQL_RES * resul
 	MYSQLI_RESOURCE *my_res; \
 	mysqli_object *intern = Z_MYSQLI_P(__id); \
 	if (!(my_res = (MYSQLI_RESOURCE *)intern->ptr)) {\
-		zend_throw_error(NULL, "%s object is already closed", ZSTR_VAL(intern->zo.ce->name));\
+		zend_throw_error(NULL, "%pS object is already closed", intern->zo.ce->name);\
 		RETURN_THROWS();\
   	}\
 	__ptr = (__type)my_res->ptr; \
 	if (my_res->status < __check) { \
-		zend_throw_error(NULL, "%s object is not fully initialized", ZSTR_VAL(intern->zo.ce->name)); \
+		zend_throw_error(NULL, "%pS object is not fully initialized", intern->zo.ce->name); \
 		RETURN_THROWS();\
 	}\
 }
@@ -176,12 +174,12 @@ extern void php_mysqli_fetch_into_hash_aux(zval *return_value, MYSQL_RES * resul
 { \
 	MYSQLI_RESOURCE *my_res; \
 	if (!(my_res = (MYSQLI_RESOURCE *)(__obj->ptr))) {\
-		zend_throw_error(NULL, "%s object is already closed", ZSTR_VAL(intern->zo.ce->name));\
+		zend_throw_error(NULL, "%pS object is already closed", intern->zo.ce->name);\
 		return;\
 	}\
 	__ptr = (__type)my_res->ptr; \
 	if (my_res->status < __check) { \
-		zend_throw_error(NULL, "%s object is not fully initialized", ZSTR_VAL(intern->zo.ce->name)); \
+		zend_throw_error(NULL, "%pS object is not fully initialized", intern->zo.ce->name); \
 		return;\
 	}\
 }
@@ -190,7 +188,7 @@ extern void php_mysqli_fetch_into_hash_aux(zval *return_value, MYSQL_RES * resul
 { \
 	MYSQLI_FETCH_RESOURCE((__ptr), MY_MYSQL *, (__id), (__check)); \
 	if (!(__ptr)->mysql) { \
-		zend_throw_error(NULL, "%s object is not fully initialized", ZSTR_VAL(Z_OBJCE_P(__id)->name)); \
+		zend_throw_error(NULL, "%pS object is not fully initialized", Z_OBJCE_P(__id)->name); \
 		RETURN_THROWS(); \
 	} \
 }

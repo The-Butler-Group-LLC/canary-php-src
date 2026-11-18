@@ -15,9 +15,8 @@
 #ifndef RANGEFORMATTER_CLASS_H
 #define RANGEFORMATTER_CLASS_H
 
-#include <unicode/numberrangeformatter.h>
-
 #ifdef __cplusplus
+#include <unicode/numberrangeformatter.h>
 using icu::number::LocalizedNumberRangeFormatter;
 #else
 typedef void LocalizedNumberRangeFormatter;
@@ -36,9 +35,7 @@ typedef struct {
     zend_object     zo;
 } IntlNumberRangeFormatter_object;
 
-static inline IntlNumberRangeFormatter_object *php_intl_numberrangeformatter_fetch_object(zend_object *obj) {
-    return (IntlNumberRangeFormatter_object *)((char*)(obj) - offsetof(IntlNumberRangeFormatter_object, zo));
-}
+#define php_intl_numberrangeformatter_fetch_object(obj) ZEND_CONTAINER_OF(obj, IntlNumberRangeFormatter_object, zo)
 
 #define Z_INTL_RANGEFORMATTER_P(zv) php_intl_numberrangeformatter_fetch_object(Z_OBJ_P(zv))
 
@@ -47,7 +44,8 @@ static inline IntlNumberRangeFormatter_object *php_intl_numberrangeformatter_fet
 
 #define RANGEFORMATTER_OBJECT(nfo) (nfo)->nrf_data.unumrf
 
-
+BEGIN_EXTERN_C()
 void rangeformatter_register_class(void);
+END_EXTERN_C()
 
 #endif

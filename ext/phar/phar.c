@@ -131,7 +131,7 @@ static void phar_split_cache_list(void) /* {{{ */
 			len = strlen(key);
 		}
 
-		if (SUCCESS == phar_open_from_filename(key, len, NULL, 0, 0, &phar, NULL)) {
+		if (SUCCESS == phar_open_from_filename(key, len, NULL, 0, &phar, NULL)) {
 			phar->phar_pos = i++;
 			php_stream_close(phar->fp);
 			phar->fp = NULL;
@@ -484,8 +484,14 @@ ZEND_ATTRIBUTE_NONNULL void phar_entry_remove(phar_entry_data *idata, char **err
 /**
  * Open an already loaded phar
  */
-static zend_result phar_open_parsed_phar(char *fname, size_t fname_len, const char *alias, size_t alias_len, bool is_data, uint32_t options, phar_archive_data** pphar, char **error) /* {{{ */
-{
+static zend_result phar_open_parsed_phar(
+	char *fname,
+	size_t fname_len,
+	/* copyable & hash update */ zend_string *alias,
+	bool is_data,
+	phar_archive_data** pphar,
+	char **error
+) {
 #ifdef PHP_WIN32
 	char *save_fname;
 	ALLOCA_FLAG(fname_use_heap)
@@ -503,7 +509,9 @@ static zend_result phar_open_parsed_phar(char *fname, size_t fname_len, const ch
 		phar_unixify_path_separators(fname, fname_len);
 	}
 #endif
-	phar_archive_data *phar = phar_get_archive(fname, fname_len, alias, alias_len, error);
+	const char *alias_cstr = alias ? ZSTR_VAL(alias) : NULL;
+	size_t alias_len = alias ? ZSTR_LEN(alias) : 0;
+	phar_archive_data *phar = phar_get_archive(fname, fname_len, alias_cstr, alias_len, error);
 	/* logic is as follows:
 	   - If no alias was passed in, then it can match either and be valid
 	   - If an explicit alias was requested, ensure the filename passed in matches the phar's filename.
@@ -545,14 +553,9 @@ static zend_result phar_open_parsed_phar(char *fname, size_t fname_len, const ch
 			*pphar = NULL;
 		}
 
-		if (phar && error && !(options & REPORT_ERRORS)) {
-			efree(error);
-		}
-
 		return FAILURE;
 	}
 }
-/* }}}*/
 
 /**
  * Attempt to serialize the data.
@@ -823,7 +826,6 @@ static zend_result phar_parse_pharfile(php_stream *fp, const char *fname, size_t
 
 	SAFE_PHAR_GET_32(buffer, endbuffer, manifest_flags);
 
-	manifest_flags &= ~PHAR_HDR_COMPRESSION_MASK;
 	manifest_flags &= ~PHAR_FILE_COMPRESSION_MASK;
 	/* remember whether this entire phar was compressed with gz/bzip2 */
 	manifest_flags |= compression;
@@ -1220,7 +1222,10 @@ static zend_result phar_parse_pharfile(php_stream *fp, const char *fname, size_t
 		} else {
 			str = entry.filename;
 		}
-		zend_hash_add_mem(&mydata->manifest, str, (void*)&entry, sizeof(phar_entry_info));
+		if (!zend_hash_add_mem(&mydata->manifest, str, (void*)&entry, sizeof(phar_entry_info))) {
+			phar_metadata_tracker_free(&entry.metadata_tracker, entry.is_persistent);
+			zend_string_free(entry.filename);
+		}
 		if (mydata->is_persistent) {
 			zend_string_release(str);
 		}
@@ -1302,8 +1307,14 @@ static zend_result phar_parse_pharfile(php_stream *fp, const char *fname, size_t
 /**
  * Create or open a phar for writing
  */
-ZEND_ATTRIBUTE_NONNULL_ARGS(1, 6, 7) zend_result phar_open_or_create_filename(zend_string *fname, const char *alias, size_t alias_len, bool is_data, uint32_t options, phar_archive_data** pphar, char **error) /* {{{ */
-{
+ZEND_ATTRIBUTE_NONNULL_ARGS(1, 5, 6) zend_result phar_open_or_create_filename(
+	zend_string *fname,
+	/* copyable & hash update */ zend_string *alias,
+	bool is_data,
+	uint32_t options,
+	phar_archive_data** pphar,
+	char **error
+) {
 	const char *ext_str, *z;
 	char *my_error;
 	size_t ext_len;
@@ -1328,7 +1339,7 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(1, 6, 7) zend_result phar_open_or_create_filename(ze
 		return FAILURE;
 	}
 check_file:
-	if (phar_open_parsed_phar(ZSTR_VAL(fname), ZSTR_LEN(fname), alias, alias_len, is_data, options, test, &my_error) == SUCCESS) {
+	if (phar_open_parsed_phar(ZSTR_VAL(fname), ZSTR_LEN(fname), alias, is_data, test, &my_error) == SUCCESS) {
 		*pphar = *test;
 
 		if ((*test)->is_data && !(*test)->is_tar && !(*test)->is_zip) {
@@ -1354,22 +1365,27 @@ check_file:
 
 	if (ext_len > 3 && (z = memchr(ext_str, 'z', ext_len)) && ((ext_str + ext_len) - z >= 2) && !memcmp(z + 1, "ip", 2)) {
 		/* assume zip-based phar */
-		return phar_open_or_create_zip(fname, alias, alias_len, is_data, options, pphar, error);
+		return phar_open_or_create_zip(fname, alias, is_data, options, pphar, error);
 	}
 
 	if (ext_len > 3 && (z = memchr(ext_str, 't', ext_len)) && ((ext_str + ext_len) - z >= 2) && !memcmp(z + 1, "ar", 2)) {
 		/* assume tar-based phar */
-		return phar_open_or_create_tar(fname, alias, alias_len, is_data, options, pphar, error);
+		return phar_open_or_create_tar(fname, alias, is_data, options, pphar, error);
 	}
 
-	return phar_create_or_parse_filename(fname, alias, alias_len, is_data, options, pphar, error);
+	return phar_create_or_parse_filename(fname, alias, is_data, options, pphar, error);
 }
-/* }}} */
 
-static zend_result phar_open_from_fp(php_stream* fp, const char *fname, size_t fname_len, const char *alias, size_t alias_len, uint32_t options, phar_archive_data** pphar, char **error);
+static zend_result phar_open_from_fp(php_stream* fp, const char *fname, size_t fname_len, /* copyable & hash update */ zend_string *alias, uint32_t options, phar_archive_data** pphar, char **error);
 
-ZEND_ATTRIBUTE_NONNULL_ARGS(1, 6, 7) zend_result phar_create_or_parse_filename(zend_string *fname, const char *alias, size_t alias_len, bool is_data, uint32_t options, phar_archive_data** pphar, char **error) /* {{{ */
-{
+ZEND_ATTRIBUTE_NONNULL_ARGS(1, 5, 6) zend_result phar_create_or_parse_filename(
+	zend_string *fname,
+	/* copyable & hash update */ zend_string *alias,
+	bool is_data,
+	uint32_t options,
+	phar_archive_data** pphar,
+	char **error
+) {
 	php_stream *fp;
 	zend_string *actual = NULL;
 	zend_string *save_fname = fname;
@@ -1387,7 +1403,7 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(1, 6, 7) zend_result phar_create_or_parse_filename(z
 	}
 
 	if (fp) {
-		if (phar_open_from_fp(fp, ZSTR_VAL(fname), ZSTR_LEN(fname), alias, alias_len, options, pphar, error) == SUCCESS) {
+		if (phar_open_from_fp(fp, ZSTR_VAL(fname), ZSTR_LEN(fname), alias, options, pphar, error) == SUCCESS) {
 			if ((*pphar)->is_data || !PHAR_G(readonly)) {
 				(*pphar)->is_writeable = 1;
 			}
@@ -1458,15 +1474,14 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(1, 6, 7) zend_result phar_create_or_parse_filename(z
 
 	if (is_data) {
 		alias = NULL;
-		alias_len = 0;
 		mydata->is_data = 1;
 		/* assume tar format, PharData can specify other */
 		mydata->is_tar = 1;
 	} else {
 		if (alias) {
-			const phar_archive_data *fd_ptr = zend_hash_str_find_ptr(&(PHAR_G(phar_alias_map)), alias, alias_len);
+			const phar_archive_data *fd_ptr = zend_hash_find_ptr(&(PHAR_G(phar_alias_map)), alias);
 			if (fd_ptr && SUCCESS != phar_free_alias(fd_ptr)) {
-				spprintf(error, 4096, "phar error: phar \"%s\" cannot set alias \"%s\", already in use by another phar archive", ZSTR_VAL(mydata->fname), alias);
+				spprintf(error, 4096, "phar error: phar \"%s\" cannot set alias \"%s\", already in use by another phar archive", ZSTR_VAL(mydata->fname), ZSTR_VAL(alias));
 
 				zend_hash_del(&(PHAR_G(phar_fname_map)), mydata->fname);
 
@@ -1477,14 +1492,14 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(1, 6, 7) zend_result phar_create_or_parse_filename(z
 		}
 
 		ZEND_ASSERT(!mydata->is_persistent);
-		mydata->alias = alias ? estrndup(alias, alias_len) : estrndup(ZSTR_VAL(mydata->fname), ZSTR_LEN(mydata->fname));
-		mydata->alias_len = alias ? alias_len : ZSTR_LEN(mydata->fname);
+		mydata->alias = alias ? estrndup(ZSTR_VAL(alias), ZSTR_LEN(alias)) : estrndup(ZSTR_VAL(mydata->fname), ZSTR_LEN(mydata->fname));
+		mydata->alias_len = alias ? ZSTR_LEN(alias) : ZSTR_LEN(mydata->fname);
 	}
 
-	if (alias_len && alias) {
-		if (NULL == zend_hash_str_add_ptr(&(PHAR_G(phar_alias_map)), alias, alias_len, mydata)) {
+	if (alias) {
+		if (NULL == zend_hash_add_ptr(&(PHAR_G(phar_alias_map)), alias, mydata)) {
 			if (options & REPORT_ERRORS) {
-				spprintf(error, 0, "archive \"%s\" cannot be associated with alias \"%s\", already in use", ZSTR_VAL(fname), alias);
+				spprintf(error, 0, "archive \"%s\" cannot be associated with alias \"%s\", already in use", ZSTR_VAL(fname), ZSTR_VAL(alias));
 			}
 
 			zend_hash_del(&(PHAR_G(phar_fname_map)), mydata->fname);
@@ -1498,7 +1513,6 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(1, 6, 7) zend_result phar_create_or_parse_filename(z
 	*pphar = mydata;
 	return SUCCESS;
 }
-/* }}}*/
 
 /**
  * Return an already opened filename.
@@ -1507,8 +1521,14 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(1, 6, 7) zend_result phar_create_or_parse_filename(z
  * that the manifest is proper, then pass it to phar_parse_pharfile().  SUCCESS
  * or FAILURE is returned and pphar is set to a pointer to the phar's manifest
  */
-zend_result phar_open_from_filename(char *fname, size_t fname_len, const char *alias, size_t alias_len, uint32_t options, phar_archive_data** pphar, char **error) /* {{{ */
-{
+zend_result phar_open_from_filename(
+	char *fname,
+	size_t fname_len,
+	/* copyable & hash update */ zend_string *alias,
+	uint32_t options,
+	phar_archive_data** pphar,
+	char **error
+) {
 	php_stream *fp;
 	zend_string *actual;
 	bool is_data = false;
@@ -1521,7 +1541,7 @@ zend_result phar_open_from_filename(char *fname, size_t fname_len, const char *a
 		is_data = true;
 	}
 
-	if (phar_open_parsed_phar(fname, fname_len, alias, alias_len, is_data, options, pphar, error) == SUCCESS) {
+	if (phar_open_parsed_phar(fname, fname_len, alias, is_data, pphar, error) == SUCCESS) {
 		return SUCCESS;
 	} else if (error && *error) {
 		return FAILURE;
@@ -1549,7 +1569,7 @@ zend_result phar_open_from_filename(char *fname, size_t fname_len, const char *a
 		fname_len = ZSTR_LEN(actual);
 	}
 
-	zend_result ret = phar_open_from_fp(fp, fname, fname_len, alias, alias_len, options, pphar, error);
+	zend_result ret = phar_open_from_fp(fp, fname, fname_len, alias, options, pphar, error);
 
 	if (actual) {
 		zend_string_release_ex(actual, 0);
@@ -1557,15 +1577,21 @@ zend_result phar_open_from_filename(char *fname, size_t fname_len, const char *a
 
 	return ret;
 }
-/* }}}*/
 
 /**
  * Scan an open fp for the required __HALT_COMPILER(); ?> token and verify
  * that the manifest is proper, then pass it to phar_parse_pharfile().  SUCCESS
  * or FAILURE is returned and pphar is set to a pointer to the phar's manifest
  */
-static zend_result phar_open_from_fp(php_stream* fp, const char *fname, size_t fname_len, const char *alias, size_t alias_len, uint32_t options, phar_archive_data** pphar, char **error) /* {{{ */
-{
+static zend_result phar_open_from_fp(
+	php_stream* fp,
+	const char *fname,
+	size_t fname_len,
+	/* copyable & hash update */ zend_string *alias,
+	uint32_t options,
+	phar_archive_data** pphar,
+	char **error
+) {
 	static const char token[] = "__HALT_COMPILER();";
 	static const char zip_magic[] = "PK\x03\x04";
 	static const char gz_magic[] = "\x1f\x8b\x08";
@@ -1716,20 +1742,22 @@ static zend_result phar_open_from_fp(php_stream* fp, const char *fname, size_t f
 
 			if (!memcmp(pos, zip_magic, 4)) {
 				php_stream_seek(fp, 0, SEEK_END);
-				return phar_parse_zipfile(fp, fname, fname_len, alias, alias_len, pphar, error);
+				return phar_parse_zipfile(fp, fname, fname_len, alias, pphar, error);
 			}
 
 			if (got >= 512) {
 				if (phar_is_tar(pos, fname)) {
 					php_stream_rewind(fp);
-					return phar_parse_tarfile(fp, fname, fname_len, alias, alias_len, pphar, compression, error);
+					return phar_parse_tarfile(fp, fname, fname_len, alias, pphar, compression, error);
 				}
 			}
 		}
 
 		if (got > 0 && (pos = php_memnistr(buffer, token, tokenlen, buffer + got + sizeof(token))) != NULL) {
 			halt_offset += (pos - buffer); /* no -tokenlen+tokenlen here */
-			return phar_parse_pharfile(fp, fname, fname_len, alias, alias_len, halt_offset, pphar, compression, error);
+			const char *alias_cstr = alias ? ZSTR_VAL(alias) : NULL;
+			size_t alias_len = alias ? ZSTR_LEN(alias) : 0;
+			return phar_parse_pharfile(fp, fname, fname_len, alias_cstr, alias_len, halt_offset, pphar, compression, error);
 		}
 
 		halt_offset += got;
@@ -1738,7 +1766,6 @@ static zend_result phar_open_from_fp(php_stream* fp, const char *fname, size_t f
 
 	MAPPHAR_ALLOC_FAIL("internal corruption of phar \"%s\" (__HALT_COMPILER(); not found)")
 }
-/* }}} */
 
 /*
  * given the location of the file extension and the start of the file path,
@@ -2072,7 +2099,7 @@ zend_string* phar_fix_filepath(const char *path, size_t path_length, bool use_cw
 	size_t ptr_length;
 
 	if (use_cwd && PHAR_G(cwd_len) && path_length > 2 && path[0] == '.' && path[1] == '/') {
-		new_path = zend_string_alloc(path_length + path_length + 1, false);
+		new_path = zend_string_alloc(path_length + PHAR_G(cwd_len) + 1, false);
 		new_path_len = PHAR_G(cwd_len);
 		memcpy(ZSTR_VAL(new_path), PHAR_G(cwd), PHAR_G(cwd_len));
 	} else {
@@ -2252,7 +2279,7 @@ zend_string* phar_split_fname(const char *filename, size_t filename_len, zend_st
  * Invoked when a user calls Phar::mapPhar() from within an executing .phar
  * to set up its manifest directly
  */
-ZEND_ATTRIBUTE_NONNULL_ARGS(3) zend_result phar_open_executed_filename(const char *alias, size_t alias_len, char **error) /* {{{ */
+ZEND_ATTRIBUTE_NONNULL_ARGS(2) zend_result phar_open_executed_filename(/* copyable & hash update */ zend_string *alias, char **error) /* {{{ */
 {
 	*error = NULL;
 
@@ -2263,7 +2290,7 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(3) zend_result phar_open_executed_filename(const cha
 		return FAILURE;
 	}
 
-	if (phar_open_parsed_phar(ZSTR_VAL(fname), ZSTR_LEN(fname), alias, alias_len, false, REPORT_ERRORS, NULL, NULL) == SUCCESS) {
+	if (phar_open_parsed_phar(ZSTR_VAL(fname), ZSTR_LEN(fname), alias, false, NULL, NULL) == SUCCESS) {
 		return SUCCESS;
 	}
 
@@ -2292,7 +2319,7 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(3) zend_result phar_open_executed_filename(const cha
 		fname = actual;
 	}
 
-	zend_result ret = phar_open_from_fp(fp, ZSTR_VAL(fname), ZSTR_LEN(fname), alias, alias_len, REPORT_ERRORS, NULL, error);
+	zend_result ret = phar_open_from_fp(fp, ZSTR_VAL(fname), ZSTR_LEN(fname), alias, REPORT_ERRORS, NULL, error);
 
 	if (actual) {
 		zend_string_release_ex(actual, 0);
@@ -2694,7 +2721,9 @@ ZEND_ATTRIBUTE_NONNULL_ARGS(1, 4) int phar_flush_ex(phar_archive_data *phar, zen
 			entry->compressed_filesize = entry->uncompressed_filesize;
 			continue;
 		}
-		filter = php_stream_filter_create(phar_compress_filter(entry, false), NULL, 0);
+		const char *compression_filter_name = phar_get_compress_filter_name(entry);
+		ZEND_ASSERT(compression_filter_name && "Must have as this has a compression flag set");
+		filter = php_stream_filter_create(compression_filter_name, NULL, false);
 		if (!filter) {
 			if (must_close_old_file) {
 				php_stream_close(oldfile);
@@ -3136,9 +3165,29 @@ static size_t phar_zend_stream_fsizer(void *handle) /* {{{ */
 
 zend_op_array *(*phar_orig_compile_file)(zend_file_handle *file_handle, int type);
 
+static bool phar_has_marker_in_filename(const zend_string *filename)
+{
+	const char *path = ZSTR_VAL(filename);
+	const char *basename = zend_memrchr(path, '/', ZSTR_LEN(filename));
+#ifdef PHP_WIN32
+	const char *backslash = zend_memrchr(path, '\\', ZSTR_LEN(filename));
+	if (backslash && (!basename || backslash > basename)) {
+		basename = backslash;
+	}
+#endif
+	const char *marker = basename ? basename + 1 : path;
+	while ((marker = strstr(marker, ".phar"))) {
+		marker += sizeof(".phar") - 1;
+		if (*marker == '\0' || *marker == '.') {
+			return true;
+		}
+	}
+	return false;
+}
+
 static zend_string *phar_resolve_path(zend_string *filename)
 {
-	zend_string *ret = phar_find_in_include_path(filename, NULL);
+	zend_string *ret = phar_find_in_include_path(filename);
 	if (!ret) {
 		ret = phar_save_resolve_path(filename);
 	}
@@ -3155,13 +3204,13 @@ static zend_op_array *phar_compile_file(zend_file_handle *file_handle, int type)
 	if (!file_handle || !file_handle->filename) {
 		return phar_orig_compile_file(file_handle, type);
 	}
-	if (strstr(ZSTR_VAL(file_handle->filename), ".phar") && !strstr(ZSTR_VAL(file_handle->filename), "://")) {
-		if (SUCCESS == phar_open_from_filename(ZSTR_VAL(file_handle->filename), ZSTR_LEN(file_handle->filename), NULL, 0, 0, &phar, NULL)) {
+	if (phar_has_marker_in_filename(file_handle->filename) && !strstr(ZSTR_VAL(file_handle->filename), "://")) {
+		if (SUCCESS == phar_open_from_filename(ZSTR_VAL(file_handle->filename), ZSTR_LEN(file_handle->filename), NULL, 0, &phar, NULL)) {
 			if (phar->is_zip || phar->is_tar) {
 				zend_file_handle f;
 
 				/* zip or tar-based phar */
-				name = zend_strpprintf(4096, "phar://%s/%s", ZSTR_VAL(file_handle->filename), ".phar/stub.php");
+				name = zend_strpprintf(4096, "phar://%pS/%s", file_handle->filename, ".phar/stub.php");
 				zend_stream_init_filename_ex(&f, name);
 				if (SUCCESS == zend_stream_open_function(&f)) {
 					zend_string_release(f.filename);

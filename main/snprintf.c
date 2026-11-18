@@ -30,7 +30,7 @@
 #include <locale.h>
 #ifdef ZTS
 #include "ext/standard/php_string.h"
-#define LCONV_DECIMAL_POINT (*lconv.decimal_point)
+#define LCONV_DECIMAL_POINT localeconv_decimal_point()
 #else
 #define LCONV_DECIMAL_POINT (*lconv->decimal_point)
 #endif
@@ -284,7 +284,7 @@ PHPAPI char * php_conv_fp(char format, double num,
 	/*
 	 * Check for Infinity and NaN
 	 */
-	if (isalpha((int)*p)) {
+	if (isalpha((unsigned char)*p)) {
 		*len = strlen(p);
 		memcpy(buf, p, *len + 1);
 		*is_negative = false;
@@ -431,11 +431,11 @@ typedef struct buf_area buffy;
 #define NUM( c )			( c - '0' )
 
 #define STR_TO_DEC( str, num )		\
-    num = NUM( *str++ ) ;		\
-    while ( isdigit((int)*str ) )		\
+    num = NUM( *(str)++ ) ;		\
+    while ( isdigit((unsigned char)*(str) ) )		\
     {					\
 	num *= 10 ;			\
-	num += NUM( *str++ ) ;		\
+	num += NUM( *(str)++ ) ;		\
     }
 
 /*
@@ -491,9 +491,7 @@ static size_t format_converter(buffy * odp, const char *fmt, va_list ap) /* {{{ 
 	char num_buf[NUM_BUF_SIZE];
 	char char_buf[2];			/* for printing %% and %<unknown> */
 
-#ifdef ZTS
-	struct lconv lconv;
-#else
+#ifndef ZTS
 	struct lconv *lconv = NULL;
 #endif
 
@@ -529,7 +527,7 @@ static size_t format_converter(buffy * odp, const char *fmt, va_list ap) /* {{{ 
 			/*
 			 * Try to avoid checking for flags, width or precision
 			 */
-			if (isascii((int)*fmt) && !islower((int)*fmt)) {
+			if (isascii((unsigned char)*fmt) && !islower((unsigned char)*fmt)) {
 				/*
 				 * Recognize flags: -, #, BLANK, +
 				 */
@@ -551,7 +549,7 @@ static size_t format_converter(buffy * odp, const char *fmt, va_list ap) /* {{{ 
 				/*
 				 * Check if a width was specified
 				 */
-				if (isdigit((int)*fmt)) {
+				if (isdigit((unsigned char)*fmt)) {
 					STR_TO_DEC(fmt, min_width);
 					adjust_width = true;
 				} else if (*fmt == '*') {
@@ -571,7 +569,7 @@ static size_t format_converter(buffy * odp, const char *fmt, va_list ap) /* {{{ 
 				if (*fmt == '.') {
 					adjust_precision = true;
 					fmt++;
-					if (isdigit((int)*fmt)) {
+					if (isdigit((unsigned char)*fmt)) {
 						STR_TO_DEC(fmt, precision);
 					} else if (*fmt == '*') {
 						precision = va_arg(ap, int);
@@ -798,7 +796,7 @@ static size_t format_converter(buffy * odp, const char *fmt, va_list ap) /* {{{ 
 					}
 					s = ap_php_conv_p2(ui_num, 4, *fmt, &num_buf[NUM_BUF_SIZE], &s_len);
 					FIX_PRECISION(adjust_precision, precision, s, s_len);
-					if (alternate_form && i_num != 0) {
+					if (alternate_form && ui_num != 0) {
 						*--s = *fmt;	/* 'x' or 'X' */
 						*--s = '0';
 						s_len += 2;
@@ -843,9 +841,7 @@ static size_t format_converter(buffy * odp, const char *fmt, va_list ap) /* {{{ 
 						s = "INF";
 						s_len = 3;
 					} else {
-#ifdef ZTS
-						localeconv_r(&lconv);
-#else
+#ifndef ZTS
 						if (!lconv) {
 							lconv = localeconv();
 						}
@@ -902,9 +898,7 @@ static size_t format_converter(buffy * odp, const char *fmt, va_list ap) /* {{{ 
 					/*
 					 * * We use &num_buf[ 1 ], so that we have room for the sign
 					 */
-#ifdef ZTS
-					localeconv_r(&lconv);
-#else
+#ifndef ZTS
 					if (!lconv) {
 						lconv = localeconv();
 					}

@@ -63,28 +63,55 @@ static zend_string *phar_get_link_location(phar_entry_info *entry) /* {{{ */
 }
 /* }}} */
 
-phar_entry_info *phar_get_link_source(phar_entry_info *entry) /* {{{ */
+static phar_entry_info *phar_follow_one_link(phar_entry_info *entry)
 {
 	phar_entry_info *link_entry;
+	zend_string *link;
+
+	link = phar_get_link_location(entry);
+	if (NULL != (link_entry = zend_hash_find_ptr(&(entry->phar->manifest), entry->symlink)) ||
+		NULL != (link_entry = zend_hash_find_ptr(&(entry->phar->manifest), link))) {
+		zend_string_release(link);
+		return link_entry;
+	}
+
+	zend_string_release(link);
+	return NULL;
+}
+
+phar_entry_info *phar_get_link_source(phar_entry_info *entry)
+{
+	phar_entry_info *slow, *fast;
 
 	if (!entry->symlink) {
 		return entry;
 	}
 
-	link_entry = zend_hash_find_ptr(&(entry->phar->manifest), entry->symlink);
-	if (link_entry) {
-		return phar_get_link_source(link_entry);
-	}
+	/*
+	 * Use Floyd's cycle detection algorithm to follow the symlink chain without unbounded
+	 * recursion. Each entry has at most one outgoing link, so if a cycle exists the fast pointer
+	 * will eventually meet the slow one. Otherwise the fast pointer reaches the end first.
+	 */
+	slow = fast = entry;
+	while (1) {
+		fast = phar_follow_one_link(fast);
+		if (!fast || !fast->symlink) {
+			return fast;
+		}
+		fast = phar_follow_one_link(fast);
+		if (!fast || !fast->symlink) {
+			return fast;
+		}
 
-	zend_string *link = phar_get_link_location(entry);
-	link_entry = zend_hash_find_ptr(&(entry->phar->manifest), link);
-	zend_string_release(link);
-	if (link_entry) {
-		return phar_get_link_source(link_entry);
+		/* no need to check slow as it's always behind */
+		slow = phar_follow_one_link(slow);
+
+		if (slow == fast) {
+			/* circular symlink chain */
+			return NULL;
+		}
 	}
-	return NULL;
 }
-/* }}} */
 
 static php_stream *phar_get_entrypufp(const phar_entry_info *entry)
 {
@@ -200,7 +227,7 @@ zend_result phar_mount_entry(phar_archive_data *phar, const char *filename, size
 		return FAILURE;
 	}
 
-	if (path_len >= sizeof(".phar")-1 && !memcmp(path, ".phar", sizeof(".phar")-1)) {
+	if (phar_path_is_magic_phar_ex(path, path_len)) {
 		/* no creating magic phar files by mounting them */
 		return FAILURE;
 	}
@@ -264,18 +291,12 @@ zend_result phar_mount_entry(phar_archive_data *phar, const char *filename, size
 }
 /* }}} */
 
-zend_string *phar_find_in_include_path(const zend_string *filename, phar_archive_data **pphar) /* {{{ */
+zend_string *phar_find_in_include_path(const zend_string *filename) /* {{{ */
 {
 	zend_string *ret;
 	char *path;
 	zend_string *arch;
 	phar_archive_data *phar;
-
-	if (pphar) {
-		*pphar = NULL;
-	} else {
-		pphar = &phar;
-	}
 
 	if (!zend_is_executing() || !PHAR_G(cwd)) {
 		return NULL;
@@ -314,11 +335,7 @@ zend_string *phar_find_in_include_path(const zend_string *filename, phar_archive
 			zend_string_release_ex(arch, false);
 			return NULL;
 		}
-splitted:
-		if (pphar) {
-			*pphar = phar;
-		}
-
+splitted:;
 		zend_string *test = phar_fix_filepath(ZSTR_VAL(filename), ZSTR_LEN(filename), true);
 		if (ZSTR_VAL(test)[0] == '/') {
 			if (zend_hash_str_exists(&(phar->manifest), ZSTR_VAL(test) + 1, ZSTR_LEN(test) - 1)) {
@@ -333,7 +350,7 @@ splitted:
 			}
 		} else {
 			if (zend_hash_exists(&(phar->manifest), test)) {
-				ret = strpprintf(0, "phar://%s/%s", ZSTR_VAL(arch), ZSTR_VAL(test));
+				ret = strpprintf(0, "phar://%pS/%pS", arch, test);
 				zend_string_release_ex(test, false);
 				zend_string_release_ex(arch, false);
 				return ret;
@@ -342,26 +359,10 @@ splitted:
 		zend_string_release_ex(test, false);
 	}
 
-	spprintf(&path, MAXPATHLEN + 1 + strlen(PG(include_path)), "phar://%s/%s%c%s", ZSTR_VAL(arch), PHAR_G(cwd), DEFAULT_DIR_SEPARATOR, PG(include_path));
+	spprintf(&path, MAXPATHLEN + 1 + strlen(PG(include_path)), "phar://%pS/%s%c%s", arch, PHAR_G(cwd), DEFAULT_DIR_SEPARATOR, PG(include_path));
 	zend_string_release_ex(arch, false);
 	ret = php_resolve_path(ZSTR_VAL(filename), ZSTR_LEN(filename), path);
 	efree(path);
-
-	if (ret && zend_string_starts_with_literal_ci(ret, "phar://")) {
-		/* found phar:// */
-		arch = phar_split_fname(ZSTR_VAL(fname), ZSTR_LEN(fname), NULL, 1, 0);
-		if (!arch) {
-			return ret;
-		}
-
-		*pphar = zend_hash_find_ptr(&(PHAR_G(phar_fname_map)), arch);
-
-		if (!*pphar && PHAR_G(manifest_cached)) {
-			*pphar = zend_hash_find_ptr(&cached_phars, arch);
-		}
-
-		zend_string_release_ex(arch, false);
-	}
 
 	return ret;
 }
@@ -806,7 +807,6 @@ static void phar_set_fp_type(phar_entry_info *entry, enum phar_fp_type type, zen
  */
 ZEND_ATTRIBUTE_NONNULL zend_result phar_open_entry_fp(phar_entry_info *entry, char **error, bool follow_links) /* {{{ */
 {
-	php_stream_filter *filter;
 	phar_archive_data *phar = entry->phar;
 	zend_off_t loc;
 	php_stream *ufp;
@@ -871,15 +871,16 @@ ZEND_ATTRIBUTE_NONNULL zend_result phar_open_entry_fp(phar_entry_info *entry, ch
 
 	ufp = phar_get_entrypufp(entry);
 
-	const char *filter_name = phar_decompress_filter(entry, false);
-	if (filter_name != NULL) {
-		filter = php_stream_filter_create(filter_name, NULL, 0);
-	} else {
-		filter = NULL;
+	const char *decompression_filter_name = phar_get_decompress_filter_name(entry);
+	if (UNEXPECTED(!decompression_filter_name)) {
+		spprintf(error, 4096, "phar error: unable to read phar \"%s\" (file \"%s\" is compressed with an unknown compression algorithm)", ZSTR_VAL(phar->fname), ZSTR_VAL(entry->filename));
+		return FAILURE;
 	}
 
+	php_stream_filter *filter = php_stream_filter_create(decompression_filter_name, NULL, 0);
+
 	if (!filter) {
-		spprintf(error, 4096, "phar error: unable to read phar \"%s\" (cannot create %s filter while decompressing file \"%s\")", ZSTR_VAL(phar->fname), phar_decompress_filter(entry, true), ZSTR_VAL(entry->filename));
+		spprintf(error, 4096, "phar error: unable to read phar \"%s\" (cannot create %s filter while decompressing file \"%s\")", ZSTR_VAL(phar->fname), decompression_filter_name, ZSTR_VAL(entry->filename));
 		return FAILURE;
 	}
 
@@ -1134,7 +1135,7 @@ phar_archive_data* phar_get_archive(const char *fname, size_t fname_len, const c
 /**
  * Determine which stream compression filter (if any) we need to read this file
  */
-const char * phar_compress_filter(const phar_entry_info *entry, bool return_unknown) /* {{{ */
+const char * phar_get_compress_filter_name(const phar_entry_info *entry)
 {
 	switch (entry->flags & PHAR_ENT_COMPRESSION_MASK) {
 	case PHAR_ENT_COMPRESSED_GZ:
@@ -1142,15 +1143,14 @@ const char * phar_compress_filter(const phar_entry_info *entry, bool return_unkn
 	case PHAR_ENT_COMPRESSED_BZ2:
 		return "bzip2.compress";
 	default:
-		return return_unknown ? "unknown" : NULL;
+		return NULL;
 	}
 }
-/* }}} */
 
 /**
  * Determine which stream decompression filter (if any) we need to read this file
  */
-const char * phar_decompress_filter(const phar_entry_info *entry, bool return_unknown) /* {{{ */
+const char * phar_get_decompress_filter_name(const phar_entry_info *entry)
 {
 	uint32_t flags;
 
@@ -1166,10 +1166,9 @@ const char * phar_decompress_filter(const phar_entry_info *entry, bool return_un
 		case PHAR_ENT_COMPRESSED_BZ2:
 			return "bzip2.decompress";
 		default:
-			return return_unknown ? "unknown" : NULL;
+			return NULL;
 	}
 }
-/* }}} */
 
 /**
  * retrieve information on a file contained within a phar, or null if it ain't there
@@ -1200,7 +1199,7 @@ phar_entry_info *phar_get_entry_info_dir(phar_archive_data *phar, char *path, si
 		*error = NULL;
 	}
 
-	if (security && path_len >= sizeof(".phar")-1 && !memcmp(path, ".phar", sizeof(".phar")-1)) {
+	if (security && phar_path_is_magic_phar_ex(path, path_len)) {
 		if (error) {
 			spprintf(error, 4096, "phar error: cannot directly access magic \".phar\" directory or files within it");
 		}
@@ -1247,7 +1246,7 @@ phar_entry_info *phar_get_entry_info_dir(phar_archive_data *phar, char *path, si
 		if (!entry->is_dir && dir == 2) {
 			/* user requested a directory, we must return one */
 			if (error) {
-				spprintf(error, 4096, "phar error: path \"%s\" exists and is a not a directory", path);
+				spprintf(error, 4096, "phar error: path \"%s\" exists and is not a directory", path);
 			}
 			return NULL;
 		}
@@ -1273,7 +1272,7 @@ phar_entry_info *phar_get_entry_info_dir(phar_archive_data *phar, char *path, si
 			if (ZSTR_LEN(str_key) >= path_len || strncmp(ZSTR_VAL(str_key), path, ZSTR_LEN(str_key))) {
 				continue;
 			} else {
-				char *test;
+				char *test, *mount_path;
 				size_t test_len;
 				php_stream_statbuf ssb;
 
@@ -1311,29 +1310,32 @@ phar_entry_info *phar_get_entry_info_dir(phar_archive_data *phar, char *path, si
 					efree(test);
 					/* user requested a directory, we must return one */
 					if (error) {
-						spprintf(error, 4096, "phar error: path \"%s\" exists and is a not a directory", path);
+						spprintf(error, 4096, "phar error: path \"%s\" exists and is not a directory", path);
 					}
 					return NULL;
 				}
 
 				/* mount the file just in time */
-				if (SUCCESS != phar_mount_entry(phar, test, test_len, path, path_len)) {
-					efree(test);
+				mount_path = estrndup(path, path_len);
+				if (SUCCESS != phar_mount_entry(phar, test, test_len, mount_path, path_len)) {
 					if (error) {
 						spprintf(error, 4096, "phar error: path \"%s\" exists as file \"%s\" and could not be mounted", path, test);
 					}
+					efree(mount_path);
+					efree(test);
 					return NULL;
 				}
-
-				efree(test);
+				efree(mount_path);
 
 				entry = zend_hash_str_find_ptr(&phar->manifest, path, path_len);
 				if (!entry) {
 					if (error) {
 						spprintf(error, 4096, "phar error: path \"%s\" exists as file \"%s\" and could not be retrieved after being mounted", path, test);
 					}
+					efree(test);
 					return NULL;
 				}
+				efree(test);
 				return entry;
 			}
 		} ZEND_HASH_FOREACH_END();
@@ -1345,18 +1347,18 @@ phar_entry_info *phar_get_entry_info_dir(phar_archive_data *phar, char *path, si
 
 static const char hexChars[] = "0123456789ABCDEF";
 
-static int phar_hex_str(const char *digest, size_t digest_len, char **signature) /* {{{ */
+static size_t phar_hex_str(const char *digest, size_t digest_len, char **signature) /* {{{ */
 {
-	int pos = -1;
+	size_t pos = 0;
 	size_t len = 0;
 
-	*signature = (char*)safe_pemalloc(digest_len, 2, 1, PHAR_G(persist));
+	*signature = (char*)safe_pemalloc(digest_len * 2, sizeof(char), 1, PHAR_G(persist));
 
 	for (; len < digest_len; ++len) {
-		(*signature)[++pos] = hexChars[((const unsigned char *)digest)[len] >> 4];
-		(*signature)[++pos] = hexChars[((const unsigned char *)digest)[len] & 0x0F];
+		(*signature)[pos++] = hexChars[((const unsigned char *)digest)[len] >> 4];
+		(*signature)[pos++] = hexChars[((const unsigned char *)digest)[len] & 0x0F];
 	}
-	(*signature)[++pos] = '\0';
+	(*signature)[pos] = '\0';
 	return pos;
 }
 /* }}} */
@@ -1382,7 +1384,7 @@ ZEND_ATTRIBUTE_NONNULL static bool phar_call_openssl_verify(
 	php_stream_rewind(fp);
 	zend_string *str = php_stream_copy_to_mem(fp, (size_t) end, false);
 	/* No content thus signing must fail */
-	if (UNEXPECTED(str == NULL)) {
+	if (UNEXPECTED(str == NULL || (size_t)end != ZSTR_LEN(str))) {
 		return false;
 	}
 
@@ -2034,14 +2036,13 @@ static void phar_manifest_copy_ctor(zval *zv) /* {{{ */
 }
 /* }}} */
 
-static void phar_copy_cached_phar(phar_archive_data **pphar) /* {{{ */
+static phar_archive_data* phar_copy_cached_phar(const phar_archive_data *persistent_phar) /* {{{ */
 {
-	phar_archive_data *phar;
 	HashTable newmanifest;
 	phar_archive_object *objphar;
 
-	phar = (phar_archive_data *) emalloc(sizeof(phar_archive_data));
-	*phar = **pphar;
+	phar_archive_data *phar = emalloc(sizeof(phar_archive_data));
+	*phar = *persistent_phar;
 	phar->is_persistent = 0;
 	zend_string_addref(phar->fname);
 
@@ -2055,17 +2056,13 @@ static void phar_copy_cached_phar(phar_archive_data **pphar) /* {{{ */
 
 	phar_metadata_tracker_clone(&phar->metadata_tracker);
 
-	zend_hash_init(&newmanifest, sizeof(phar_entry_info),
-		zend_get_hash_value, destroy_phar_manifest_entry, 0);
-	zend_hash_copy(&newmanifest, &(*pphar)->manifest, phar_manifest_copy_ctor);
+	zend_hash_init(&newmanifest, sizeof(phar_entry_info), NULL, destroy_phar_manifest_entry, 0);
+	zend_hash_copy(&newmanifest, &persistent_phar->manifest, phar_manifest_copy_ctor);
 	zend_hash_apply_with_argument(&newmanifest, phar_update_cached_entry, (void *)phar);
 	phar->manifest = newmanifest;
-	zend_hash_init(&phar->mounted_dirs, sizeof(char *),
-		zend_get_hash_value, NULL, 0);
-	zend_hash_init(&phar->virtual_dirs, sizeof(char *),
-		zend_get_hash_value, NULL, 0);
-	zend_hash_copy(&phar->virtual_dirs, &(*pphar)->virtual_dirs, NULL);
-	*pphar = phar;
+	zend_hash_init(&phar->mounted_dirs, sizeof(char *), NULL, NULL, 0);
+	zend_hash_init(&phar->virtual_dirs, sizeof(char *), NULL, NULL, 0);
+	zend_hash_copy(&phar->virtual_dirs, &persistent_phar->virtual_dirs, NULL);
 
 	/* now, scan the list of persistent Phar objects referencing this phar and update the pointers */
 	ZEND_HASH_MAP_FOREACH_PTR(&PHAR_G(phar_persist_map), objphar) {
@@ -2073,29 +2070,26 @@ static void phar_copy_cached_phar(phar_archive_data **pphar) /* {{{ */
 			objphar->archive = phar;
 		}
 	} ZEND_HASH_FOREACH_END();
+	return phar;
 }
 /* }}} */
 
 zend_result phar_copy_on_write(phar_archive_data **pphar) /* {{{ */
 {
-	zval zv, *pzv;
-	phar_archive_data *newpphar;
+	phar_archive_data *newpphar = phar_copy_cached_phar(*pphar);
 
-	ZVAL_PTR(&zv, *pphar);
-	pzv = zend_hash_add(&(PHAR_G(phar_fname_map)), (*pphar)->fname, &zv);
+	zval *pzv = zend_hash_add_ptr(&(PHAR_G(phar_fname_map)), newpphar->fname, newpphar);
 	if (!pzv) {
 		return FAILURE;
 	}
 
-	phar_copy_cached_phar((phar_archive_data **)&Z_PTR_P(pzv));
-	newpphar = Z_PTR_P(pzv);
 	/* invalidate phar cache */
 	PHAR_G(last_phar) = NULL;
 	PHAR_G(last_alias) = NULL;
 	PHAR_G(last_phar_name) = NULL;
 
 	if (newpphar->alias_len && NULL == zend_hash_str_add_ptr(&(PHAR_G(phar_alias_map)), newpphar->alias, newpphar->alias_len, newpphar)) {
-		zend_hash_del(&(PHAR_G(phar_fname_map)), (*pphar)->fname);
+		zend_hash_del(&(PHAR_G(phar_fname_map)), newpphar->fname);
 		return FAILURE;
 	}
 

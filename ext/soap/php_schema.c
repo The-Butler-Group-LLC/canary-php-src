@@ -53,6 +53,28 @@ static bool node_is_equal_xsd(xmlNodePtr node, const char *name)
 	return node_is_equal_ex_one_of(node, name, ns);
 }
 
+static int schema_parse_int(const xmlChar *value, const char *name, bool allow_negative)
+{
+	const char *str = (const char *) value;
+	zend_long lval = 0;
+	int oflow_info = 0;
+	uint8_t type = is_numeric_string_ex(str, strlen(str), &lval, NULL, true, &oflow_info, NULL);
+
+	if (type != IS_LONG) {
+		errno = 0;
+		lval = ZEND_STRTOL(str, NULL, 10);
+		if (UNEXPECTED(oflow_info || (errno == ERANGE && lval != 0))) {
+			soap_error1(E_ERROR, "Parsing Schema: %s value is out of range", name);
+		}
+	}
+
+	if (UNEXPECTED(ZEND_LONG_EXCEEDS_INT(lval) || (!allow_negative && lval < 0))) {
+		soap_error1(E_ERROR, "Parsing Schema: %s value is out of range", name);
+	}
+
+	return (int) lval;
+}
+
 static encodePtr create_encoder(sdlPtr sdl, sdlTypePtr cur_type, const xmlChar *ns, const xmlChar *type)
 {
 	smart_str nscat = {0};
@@ -854,7 +876,7 @@ static int schema_restriction_var_int(xmlNodePtr val, sdlRestrictionIntPtr *valp
 		soap_error0(E_ERROR, "Parsing Schema: missing restriction value");
 	}
 
-	(*valptr)->value = atoi((char*)value->children->content);
+	(*valptr)->value = schema_parse_int(value->children->content, (const char *) val->name, true);
 
 	return TRUE;
 }
@@ -1016,7 +1038,7 @@ void schema_min_max(xmlNodePtr node, sdlContentModelPtr model)
 	xmlAttrPtr attr = get_attribute(node->properties, "minOccurs");
 
 	if (attr) {
-		model->min_occurs = atoi((char*)attr->children->content);
+		model->min_occurs = schema_parse_int(attr->children->content, "minOccurs", false);
 	} else {
 		model->min_occurs = 1;
 	}
@@ -1026,7 +1048,7 @@ void schema_min_max(xmlNodePtr node, sdlContentModelPtr model)
 		if (!strncmp((char*)attr->children->content, "unbounded", sizeof("unbounded"))) {
 			model->max_occurs = -1;
 		} else {
-			model->max_occurs = atoi((char*)attr->children->content);
+			model->max_occurs = schema_parse_int(attr->children->content, "maxOccurs", false);
 		}
 	} else {
 		model->max_occurs = 1;
@@ -2171,11 +2193,17 @@ static void schema_attributegroup_fixup(sdlCtx *ctx, sdlAttributePtr attr, HashT
 		if (ctx->attributeGroups != NULL) {
 			tmp = (sdlTypePtr)schema_find_by_ref(ctx->attributeGroups, attr->ref);
 			if (tmp) {
+				if (zend_hash_index_find_ptr(&ctx->fixupInProgress, (zend_ulong)(uintptr_t)tmp) != NULL) {
+					soap_error1(E_ERROR, "Parsing Schema: recursive attributeGroup 'ref' attribute '%s'", attr->ref);
+				}
+				zend_hash_index_add_ptr(&ctx->fixupInProgress, (zend_ulong)(uintptr_t)tmp, tmp);
 				if (tmp->attributes) {
 					zend_hash_internal_pointer_reset(tmp->attributes);
 					while ((tmp_attr = zend_hash_get_current_data_ptr(tmp->attributes)) != NULL) {
-						if (zend_hash_get_current_key_type(tmp->attributes) == HASH_KEY_IS_STRING) {
-							zend_string* _key;
+						zend_string *key;
+						zend_ulong index;
+						zend_hash_key_type status = zend_hash_get_current_key(tmp->attributes, &key, &index);
+						if (status == HASH_KEY_IS_STRING) {
 							sdlAttributePtr newAttr;
 
 							schema_attribute_fixup(ctx, tmp_attr);
@@ -2193,19 +2221,17 @@ static void schema_attributegroup_fixup(sdlCtx *ctx, sdlAttributePtr attr, HashT
 								newAttr->extraAttributes = ht;
 							}
 
-							zend_hash_get_current_key(tmp->attributes, &_key, NULL);
-							zend_hash_add_ptr(ht, _key, newAttr);
+							zend_hash_add_ptr(ht, key, newAttr);
 
 							zend_hash_move_forward(tmp->attributes);
 						} else {
-							zend_ulong index;
-
+							ZEND_ASSERT(status == HASH_KEY_IS_LONG);
 							schema_attributegroup_fixup(ctx, tmp_attr, ht);
-							zend_hash_get_current_key(tmp->attributes, NULL, &index);
 							zend_hash_index_del(tmp->attributes, index);
 						}
 					}
 				}
+				zend_hash_index_del(&ctx->fixupInProgress, (zend_ulong)(uintptr_t)tmp);
 			}
 		}
 		efree(attr->ref);
@@ -2220,6 +2246,9 @@ static void schema_content_model_fixup(sdlCtx *ctx, sdlContentModelPtr model)
 			sdlTypePtr tmp;
 
 			if (ctx->sdl->groups && (tmp = zend_hash_str_find_ptr(ctx->sdl->groups, model->u.group_ref, strlen(model->u.group_ref))) != NULL) {
+				if (zend_hash_index_find_ptr(&ctx->fixupInProgress, (zend_ulong)(uintptr_t)tmp) != NULL) {
+					soap_error1(E_ERROR, "Parsing Schema: recursive group 'ref' attribute '%s'", model->u.group_ref);
+				}
 				schema_type_fixup(ctx, tmp);
 				efree(model->u.group_ref);
 				model->kind = XSD_CONTENT_GROUP;
@@ -2262,6 +2291,8 @@ static void schema_type_fixup(sdlCtx *ctx, sdlTypePtr type)
 {
 	sdlTypePtr tmp;
 	sdlAttributePtr attr;
+
+	zend_hash_index_add_ptr(&ctx->fixupInProgress, (zend_ulong)(uintptr_t)type, type);
 
 	if (type->ref != NULL) {
 		if (ctx->sdl->elements != NULL) {
@@ -2315,6 +2346,7 @@ static void schema_type_fixup(sdlCtx *ctx, sdlTypePtr type)
 			}
 		}
 	}
+	zend_hash_index_del(&ctx->fixupInProgress, (zend_ulong)(uintptr_t)type);
 }
 
 void schema_pass2(sdlCtx *ctx)
@@ -2322,6 +2354,8 @@ void schema_pass2(sdlCtx *ctx)
 	sdlPtr sdl = ctx->sdl;
 	sdlAttributePtr attr;
 	sdlTypePtr type;
+
+	zend_hash_init(&ctx->fixupInProgress, 0, NULL, NULL, 0);
 
 	if (ctx->attributes) {
 		ZEND_HASH_FOREACH_PTR(ctx->attributes, attr) {
@@ -2356,6 +2390,8 @@ void schema_pass2(sdlCtx *ctx)
 		zend_hash_destroy(ctx->attributeGroups);
 		efree(ctx->attributeGroups);
 	}
+
+	zend_hash_destroy(&ctx->fixupInProgress);
 }
 
 void delete_model(zval *zv)

@@ -27,15 +27,15 @@
 
 #include "../common/common_date.h"
 
-extern "C" {
 #include "../intl_convert.h"
 #define USE_TIMEZONE_POINTER 1
 #include "timezone_class.h"
-#include "timezone_arginfo.h"
 #include <zend_exceptions.h>
 #include <zend_interfaces.h>
+U_CDECL_BEGIN
+#include "timezone_arginfo.h"
 #include <ext/date/php_date.h>
-}
+U_CDECL_END
 
 using icu::Calendar;
 
@@ -47,7 +47,7 @@ U_CDECL_END
 /* }}} */
 
 /* {{{ timezone_object_construct */
-U_CFUNC void timezone_object_construct(const TimeZone *zone, zval *object, int owned)
+void timezone_object_construct(const TimeZone *zone, zval *object, int owned)
 {
 	TimeZone_object	*to;
 
@@ -60,7 +60,7 @@ U_CFUNC void timezone_object_construct(const TimeZone *zone, zval *object, int o
 
 /* {{{ timezone_convert_to_datetimezone
  *	   Convert from TimeZone to DateTimeZone object */
-U_CFUNC zval *timezone_convert_to_datetimezone(const TimeZone *timeZone,
+zval *timezone_convert_to_datetimezone(const TimeZone *timeZone,
 											   intl_error *outside_error,
 											   zval *ret)
 {
@@ -120,8 +120,8 @@ static void timezone_throw_exception_with_call_location(const char *msg, const c
 
 /* {{{ timezone_process_timezone_argument
  * TimeZone argument processor. outside_error may be nullptr (for static functions/constructors) */
-U_CFUNC TimeZone *timezone_process_timezone_argument(
-	zend_object *timezone_object, zend_string *timezone_string, intl_error *outside_error)
+TimeZone *timezone_process_timezone_argument(
+	zend_object *timezone_object, zend_string *timezone_string, intl_error *outside_error, uint32_t arg_num)
 {
 	std::unique_ptr<TimeZone>	timeZone;
 	bool free_string = false;
@@ -160,8 +160,9 @@ U_CFUNC TimeZone *timezone_process_timezone_argument(
 				free_string = true;
 			} else {
 				if (!EG(exception)) {
-					// TODO Proper type error
-					zend_throw_error(nullptr, "Object of class %s could not be converted to string", ZSTR_VAL(timezone_object->ce->name));
+					zend_argument_type_error(arg_num,
+						"Object of class %s could not be converted to string",
+						ZSTR_VAL(timezone_object->ce->name));
 				}
 				return nullptr;
 			}
@@ -206,7 +207,7 @@ U_CFUNC TimeZone *timezone_process_timezone_argument(
 /* {{{ clone handler for TimeZone */
 static zend_object *TimeZone_clone_obj(zend_object *object)
 {
-	TimeZone_object *to_orig = php_intl_timezone_fetch_object(object);
+	const TimeZone_object *to_orig = php_intl_timezone_fetch_object(object);
 	zend_object     *ret_val = TimeZone_ce_ptr->create_object(object->ce);
 	TimeZone_object  *to_new = php_intl_timezone_fetch_object(ret_val);
 
@@ -291,7 +292,7 @@ static HashTable *TimeZone_get_debug_info(zend_object *object, int *is_temp)
 	zend_hash_str_update(debug_info, "id", sizeof("id") - 1, &zv);
 
 	int32_t rawOffset, dstOffset;
-	UDate now = Calendar::getNow();
+	const UDate now = Calendar::getNow();
 	tz->getOffset(now, false, rawOffset, dstOffset, uec);
 	if (U_FAILURE(uec)) {
 		return debug_info;
@@ -348,7 +349,7 @@ static zend_object *TimeZone_object_create(zend_class_entry *ce)
 /* {{{ timezone_register_IntlTimeZone_class
  * Initialize 'IntlTimeZone' class
  */
-U_CFUNC void timezone_register_IntlTimeZone_class(void)
+void timezone_register_IntlTimeZone_class()
 {
 	/* Create and register 'IntlTimeZone' class. */
 	TimeZone_ce_ptr = register_class_IntlTimeZone();

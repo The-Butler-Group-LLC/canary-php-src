@@ -23,12 +23,6 @@
 #define PHP_STREAM_BRIGADE_RES_NAME	"userfilter.bucket brigade"
 #define PHP_STREAM_BUCKET_RES_NAME "userfilter.bucket"
 
-struct php_user_filter_data {
-	zend_class_entry *ce;
-	/* variable length; this *must* be last in the structure */
-	zend_string *classname;
-};
-
 /* to provide context for calling into the next filter from user-space */
 static int le_bucket_brigade;
 static int le_bucket;
@@ -48,8 +42,9 @@ PHP_METHOD(php_user_filter, filter)
 
 PHP_METHOD(php_user_filter, seek)
 {
-	zend_long offset, whence;
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "ll", &offset, &whence) == FAILURE) {
+	zend_long offset, whence, chain;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "lll", &offset, &whence, &chain) == FAILURE) {
 		RETURN_THROWS();
 	}
 
@@ -111,10 +106,22 @@ PHP_RSHUTDOWN_FUNCTION(user_filters)
 	return SUCCESS;
 }
 
+static void userfilter_release_brigade(php_stream_bucket_brigade *brigade)
+{
+	php_stream_bucket *bucket;
+
+	while ((bucket = brigade->head)) {
+		php_stream_bucket_unlink(bucket);
+		php_stream_bucket_delref(bucket);
+	}
+}
+
 static void userfilter_dtor(php_stream_filter *thisfilter)
 {
 	zval *obj = &thisfilter->abstract;
 	zval retval;
+
+	userfilter_release_brigade(&thisfilter->buffer);
 
 	if (Z_ISUNDEF_P(obj)) {
 		/* If there's no object associated then there's nothing to dispose of */
@@ -131,19 +138,23 @@ static void userfilter_dtor(php_stream_filter *thisfilter)
 	zval_ptr_dtor(obj);
 }
 
-static zend_result userfilter_assign_stream(php_stream *stream, zval *obj,
+static zend_result userfilter_assign_stream(php_stream *stream, zend_object *obj,
 		zend_string **stream_name_p, uint32_t orig_no_fclose)
 {
 	/* Give the userfilter class a hook back to the stream */
 	const zend_class_entry *old_scope = EG(fake_scope);
-	EG(fake_scope) = Z_OBJCE_P(obj);
+	EG(fake_scope) = obj->ce;
 
 	zend_string *stream_name = ZSTR_INIT_LITERAL("stream", false);
-	bool stream_property_exists = Z_OBJ_HT_P(obj)->has_property(Z_OBJ_P(obj), stream_name, ZEND_PROPERTY_EXISTS, NULL);
+	bool stream_property_exists = obj->handlers->has_property(obj, stream_name, ZEND_PROPERTY_EXISTS, NULL);
 	if (stream_property_exists) {
 		zval stream_zval;
-		php_stream_to_zval(stream, &stream_zval);
-		zend_update_property_ex(Z_OBJCE_P(obj), Z_OBJ_P(obj), stream_name, &stream_zval);
+		if (EXPECTED(stream->res && stream->res->type >= 0)) {
+			php_stream_to_zval(stream, &stream_zval);
+		} else {
+			ZVAL_NULL(&stream_zval);
+		}
+		zend_update_property_ex(obj->ce, obj, stream_name, &stream_zval);
 		/* If property update threw an exception, skip filter execution */
 		if (EG(exception)) {
 			EG(fake_scope) = old_scope;
@@ -162,20 +173,15 @@ static zend_result userfilter_assign_stream(php_stream *stream, zval *obj,
 }
 
 static php_stream_filter_status_t userfilter_filter(
-			php_stream *stream,
-			php_stream_filter *thisfilter,
-			php_stream_bucket_brigade *buckets_in,
-			php_stream_bucket_brigade *buckets_out,
-			size_t *bytes_consumed,
-			int flags
-			)
-{
+	php_stream *stream,
+	php_stream_filter *thisfilter,
+	php_stream_bucket_brigade *buckets_in,
+	php_stream_bucket_brigade *buckets_out,
+	size_t *bytes_consumed,
+	int flags
+) {
 	int ret = PSFS_ERR_FATAL;
-	zval *obj = &thisfilter->abstract;
-	zval func_name;
-	zval retval;
-	zval args[4];
-	int call_result;
+	zend_object *obj = Z_OBJ(thisfilter->abstract);
 
 	/* the userfilter object probably doesn't exist anymore */
 	if (CG(unclean_shutdown)) {
@@ -190,12 +196,24 @@ static php_stream_filter_status_t userfilter_filter(
 	if (userfilter_assign_stream(stream, obj, &stream_name, orig_no_fclose) == FAILURE) {
 		if (buckets_in->head) {
 			php_error_docref(NULL, E_WARNING, "Unprocessed filter buckets remaining on input brigade");
+			userfilter_release_brigade(buckets_in);
 		}
 		return PSFS_ERR_FATAL;
 	}
 
-	ZVAL_STRINGL(&func_name, "filter", sizeof("filter")-1);
+	/* Re-present input kept back by a previous PSFS_FEED_ME */
+	if (thisfilter->buffer.head) {
+		php_stream_bucket *bucket = thisfilter->buffer.tail;
+		while (bucket) {
+			php_stream_bucket *prev = bucket->prev;
+			php_stream_bucket_unlink(bucket);
+			php_stream_bucket_prepend(buckets_in, bucket);
+			bucket = prev;
+		}
+	}
 
+	zval retval;
+	zval args[4];
 	/* Setup calling arguments */
 	ZVAL_RES(&args[0], zend_register_resource(buckets_in, le_bucket_brigade));
 	ZVAL_RES(&args[1], zend_register_resource(buckets_out, le_bucket_brigade));
@@ -209,27 +227,49 @@ static php_stream_filter_status_t userfilter_filter(
 
 	ZVAL_BOOL(&args[3], flags & PSFS_FLAG_FLUSH_CLOSE);
 
-	call_result = call_user_function(NULL,
-			obj,
-			&func_name,
-			&retval,
-			4, args);
+	char *error = NULL;
+	zend_string *func_name = ZSTR_INIT_LITERAL("filter", false);
+	zend_result call_result = zend_call_method_if_exists_ex(obj, func_name, &retval, 4, args, NULL, &error);
+	zend_string_release_ex(func_name, false);
 
-	zval_ptr_dtor(&func_name);
+	/* No need to release args[3] as it is a boolean, delay freeing or args[2] to fetch by-ref value. */
+	zval_ptr_dtor(&args[1]);
+	zval_ptr_dtor(&args[0]);
 
-	if (call_result == SUCCESS && Z_TYPE(retval) != IS_UNDEF) {
+	/* Method does not exist or exception thrown */
+	if (UNEXPECTED(Z_ISUNDEF(retval))) {
+		if (call_result == FAILURE) {
+			zend_throw_error(NULL, "Invalid callback %pS::filter, %s", obj->ce->name, error);
+			efree(error);
+		}
+	} else {
+		// TODO: TypeError if value is not int?
 		convert_to_long(&retval);
 		ret = (int)Z_LVAL(retval);
-	} else if (call_result == FAILURE) {
-		php_error_docref(NULL, E_WARNING, "Failed to call filter function");
 	}
 
 	if (bytes_consumed) {
 		*bytes_consumed = zval_get_long(&args[2]);
 	}
+	zval_ptr_dtor(&args[2]);
 
 	if (buckets_in->head) {
-		php_error_docref(NULL, E_WARNING, "Unprocessed filter buckets remaining on input brigade");
+		if (ret == PSFS_FEED_ME && !(flags & PSFS_FLAG_FLUSH_CLOSE)) {
+			/* Keep the input for the next call and make sure the buckets own their data */
+			php_stream_bucket *bucket;
+			while ((bucket = buckets_in->head)) {
+				bucket = php_stream_bucket_make_writeable(bucket);
+				php_stream_bucket_append(&thisfilter->buffer, bucket);
+			}
+		} else {
+			php_error_docref(NULL, E_WARNING, "Unprocessed filter buckets remaining on input brigade");
+			userfilter_release_brigade(buckets_in);
+		}
+	}
+
+	/* Filter could've broken contract and added buckets anyway. */
+	if (ret != PSFS_PASS_ON && buckets_out->head) {
+		userfilter_release_brigade(buckets_out);
 	}
 
 	/* filter resources are cleaned up by the stream destructor,
@@ -239,14 +279,9 @@ static php_stream_filter_status_t userfilter_filter(
 	 * no type hint or be typed as mixed, so we can safely assign null.
 	 */
 	if (stream_name != NULL) {
-		zend_update_property_null(Z_OBJCE_P(obj), Z_OBJ_P(obj), ZSTR_VAL(stream_name), ZSTR_LEN(stream_name));
+		zend_update_property_null(obj->ce, obj, ZSTR_VAL(stream_name), ZSTR_LEN(stream_name));
 		zend_string_release(stream_name);
 	}
-
-	zval_ptr_dtor(&args[3]);
-	zval_ptr_dtor(&args[2]);
-	zval_ptr_dtor(&args[1]);
-	zval_ptr_dtor(&args[0]);
 
 	stream->flags &= ~PHP_STREAM_FLAG_NO_FCLOSE;
 	stream->flags |= orig_no_fclose;
@@ -263,7 +298,7 @@ static zend_result userfilter_seek(
 {
 	zval *obj = &thisfilter->abstract;
 	zval retval;
-	zval args[2];
+	zval args[3];
 
 	/* the userfilter object probably doesn't exist anymore */
 	if (CG(unclean_shutdown)) {
@@ -282,15 +317,16 @@ static zend_result userfilter_seek(
 	stream->flags |= PHP_STREAM_FLAG_NO_FCLOSE;
 
 	zend_string *stream_name = NULL;
-	if (userfilter_assign_stream(stream, obj, &stream_name, orig_no_fclose) == FAILURE) {
+	if (userfilter_assign_stream(stream, Z_OBJ_P(obj), &stream_name, orig_no_fclose) == FAILURE) {
 		return FAILURE;
 	}
 
 	/* Setup calling arguments */
 	ZVAL_LONG(&args[0], offset);
 	ZVAL_LONG(&args[1], whence);
+	ZVAL_LONG(&args[2], php_stream_filter_get_chain_type(stream, thisfilter));
 
-	zend_call_known_function(seek_method, Z_OBJ_P(obj), Z_OBJCE_P(obj), &retval, 2, args, NULL);
+	zend_call_known_function(seek_method, Z_OBJ_P(obj), Z_OBJCE_P(obj), &retval, 3, args, NULL);
 
 	zend_result ret = FAILURE;
 	if (Z_TYPE(retval) != IS_UNDEF) {
@@ -322,7 +358,6 @@ static const php_stream_filter_ops userfilter_ops = {
 static php_stream_filter *user_filter_factory_create(const char *filtername,
 		zval *filterparams, bool persistent)
 {
-	struct php_user_filter_data *fdat = NULL;
 	php_stream_filter *filter;
 	zval obj;
 	zval retval;
@@ -335,10 +370,15 @@ static php_stream_filter *user_filter_factory_create(const char *filtername,
 		return NULL;
 	}
 
+	if (UNEXPECTED(BG(user_filter_map) == NULL)) {
+		return NULL;
+	}
+
 	len = strlen(filtername);
 
-	/* determine the classname/class entry */
-	if (NULL == (fdat = zend_hash_str_find_ptr(BG(user_filter_map), filtername, len))) {
+	/* determine the class entry */
+	/* const */ zend_class_entry *ce = zend_hash_str_find_ptr(BG(user_filter_map), filtername, len);
+	if (UNEXPECTED(ce == NULL)) {
 		const char *period;
 
 		/* Userspace Filters using ambiguous wildcards could cause problems.
@@ -347,7 +387,7 @@ static php_stream_filter *user_filter_factory_create(const char *filtername,
            TODO: Allow failed userfilter creations to continue
                  scanning through the list */
 		if ((period = strrchr(filtername, '.'))) {
-			char *wildcard = safe_emalloc(len, 1, 3);
+			char *wildcard = safe_emalloc(len, sizeof(char), 3);
 
 			/* Search for wildcard matches instead */
 			memcpy(wildcard, filtername, len + 1); /* copy \0 */
@@ -356,7 +396,8 @@ static php_stream_filter *user_filter_factory_create(const char *filtername,
 				ZEND_ASSERT(new_period[0] == '.');
 				new_period[1] = '*';
 				new_period[2] = '\0';
-				if (NULL != (fdat = zend_hash_str_find_ptr(BG(user_filter_map), wildcard, strlen(wildcard)))) {
+				ce = zend_hash_str_find_ptr(BG(user_filter_map), wildcard, strlen(wildcard));
+				if (NULL != ce) {
 					new_period = NULL;
 				} else {
 					*new_period = '\0';
@@ -365,25 +406,16 @@ static php_stream_filter *user_filter_factory_create(const char *filtername,
 			}
 			efree(wildcard);
 		}
-		ZEND_ASSERT(fdat);
-	}
-
-	/* bind the classname to the actual class */
-	if (fdat->ce == NULL) {
-		if (NULL == (fdat->ce = zend_lookup_class(fdat->classname))) {
-			php_error_docref(NULL, E_WARNING,
-					"User-filter \"%s\" requires class \"%s\", but that class is not defined",
-					filtername, ZSTR_VAL(fdat->classname));
-			return NULL;
-		}
+		ZEND_ASSERT(ce);
 	}
 
 	/* create the object */
-	if (object_init_ex(&obj, fdat->ce) == FAILURE) {
+	if (object_init_ex(&obj, ce) == FAILURE) {
 		return NULL;
 	}
 
-	filter = php_stream_filter_alloc(&userfilter_ops, NULL, false, PSFS_SEEKABLE_CHECK);
+	filter = php_stream_filter_alloc(&userfilter_ops, NULL, false,
+			PSFS_SEEKABLE_CHECK, PSFS_SEEKABLE_CHECK);
 
 	/* filtername */
 	add_property_string(&obj, "filtername", filtername);
@@ -423,13 +455,6 @@ static php_stream_filter *user_filter_factory_create(const char *filtername,
 static const php_stream_filter_factory user_filter_factory = {
 	user_filter_factory_create
 };
-
-static void filter_item_dtor(zval *zv)
-{
-	struct php_user_filter_data *fdat = Z_PTR_P(zv);
-	zend_string_release_ex(fdat->classname, 0);
-	efree(fdat);
-}
 
 /* {{{ Return a bucket object from the brigade for operating on */
 PHP_FUNCTION(stream_bucket_make_writeable)
@@ -491,7 +516,11 @@ static void php_stream_bucket_attach(int append, INTERNAL_FUNCTION_PARAMETERS)
 	}
 
 	if (NULL != (pzdata = zend_read_property(NULL, Z_OBJ_P(zobject), "data", sizeof("data")-1, false, &rv))) {
+		if (EG(exception)) {
+			RETURN_THROWS();
+		}
 		ZVAL_DEREF(pzdata);
+		ZEND_ASSERT(Z_TYPE_P(pzdata) == IS_STRING);
 		if (!bucket->own_buf) {
 			bucket = php_stream_bucket_make_writeable(bucket);
 		}
@@ -593,12 +622,12 @@ PHP_FUNCTION(stream_get_filters)
 /* {{{ Registers a custom filter handler class */
 PHP_FUNCTION(stream_filter_register)
 {
-	zend_string *filtername, *classname;
-	struct php_user_filter_data *fdat;
+	zend_string *filtername;
+	zend_class_entry *ce = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(2, 2)
 		Z_PARAM_STR(filtername)
-		Z_PARAM_STR(classname)
+		Z_PARAM_CLASS(ce)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (!ZSTR_LEN(filtername)) {
@@ -606,30 +635,28 @@ PHP_FUNCTION(stream_filter_register)
 		RETURN_THROWS();
 	}
 
-	if (!ZSTR_LEN(classname)) {
-		zend_argument_value_error(2, "must be a non-empty string");
+	/* TODO: Check class is a child of php_user_filter? */
+	if (UNEXPECTED(ce->ce_flags & ZEND_ACC_UNINSTANTIABLE)) {
+		zend_argument_value_error(2, "must be a concrete class");
 		RETURN_THROWS();
+	}
+
+	/* Register the factory first; if that fails, don't (re)create the map,
+	 * which would leak during shutdown re-registration. */
+	if (php_stream_filter_register_factory_volatile(filtername, &user_filter_factory) == FAILURE) {
+		RETURN_FALSE;
 	}
 
 	if (!BG(user_filter_map)) {
 		BG(user_filter_map) = (HashTable*) emalloc(sizeof(HashTable));
-		zend_hash_init(BG(user_filter_map), 8, NULL, (dtor_func_t) filter_item_dtor, 0);
+		/* We don't need a destructor as we are only storing a CE which should be never modified */
+		zend_hash_init(BG(user_filter_map), 8, NULL, NULL, 0);
 	}
 
-	fdat = ecalloc(1, sizeof(struct php_user_filter_data));
-	fdat->classname = zend_string_copy(classname);
+	/* The factory registration above already rejected a duplicate name, so the
+	 * filter name cannot be present in the map either. */
+	zend_hash_add_new_ptr(BG(user_filter_map), filtername, ce);
 
-	if (zend_hash_add_ptr(BG(user_filter_map), filtername, fdat) != NULL) {
-		if (php_stream_filter_register_factory_volatile(filtername, &user_filter_factory) == SUCCESS) {
-			RETURN_TRUE;
-		}
-
-		zend_hash_del(BG(user_filter_map), filtername);
-	} else {
-		zend_string_release_ex(classname, 0);
-		efree(fdat);
-	}
-
-	RETURN_FALSE;
+	RETURN_TRUE;
 }
 /* }}} */

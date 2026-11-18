@@ -43,7 +43,7 @@ PHPAPI PHP_FUNCTION(dl)
 	size_t filename_len;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_STRING(filename, filename_len)
+		Z_PARAM_PATH(filename, filename_len)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (!PG(enable_dl)) {
@@ -64,14 +64,15 @@ PHPAPI PHP_FUNCTION(dl)
 	zend_rc_debug = false;
 #endif
 
-	php_dl(filename, MODULE_TEMPORARY, return_value, 0);
-	if (Z_TYPE_P(return_value) == IS_TRUE) {
-		EG(full_tables_cleanup) = 1;
+	zend_result loaded = php_load_extension(filename, MODULE_TEMPORARY, false);
+	if (loaded == SUCCESS) {
+		EG(full_tables_cleanup) = true;
 	}
 
 #if ZEND_RC_DEBUG
 	zend_rc_debug = orig_rc_debug;
 #endif
+	RETURN_BOOL(loaded == SUCCESS);
 }
 /* }}} */
 
@@ -91,7 +92,7 @@ PHPAPI void *php_load_shlib(const char *path, char **errp)
 			size_t i = strlen(err);
 			(*errp)=estrdup(err);
 			php_win32_error_msg_free(err);
-			while (i > 0 && isspace((*errp)[i-1])) { (*errp)[i-1] = '\0'; i--; }
+			while (i > 0 && isspace((unsigned char)(*errp)[i-1])) { (*errp)[i-1] = '\0'; i--; }
 		} else {
 			(*errp) = estrdup("<No message>");
 		}
@@ -105,7 +106,7 @@ PHPAPI void *php_load_shlib(const char *path, char **errp)
 /* }}} */
 
 /* {{{ php_load_extension */
-PHPAPI int php_load_extension(const char *filename, int type, int start_now)
+PHPAPI zend_result php_load_extension(const char *filename, int type, bool start_now)
 {
 	void *handle;
 	char *libpath;
@@ -266,7 +267,7 @@ PHPAPI void *php_load_shlib(const char *path, char **errp)
 	return NULL;
 }
 
-PHPAPI int php_load_extension(const char *filename, int type, int start_now)
+PHPAPI zend_result php_load_extension(const char *filename, int type, bool start_now)
 {
 	php_dl_error(filename);
 
@@ -274,18 +275,6 @@ PHPAPI int php_load_extension(const char *filename, int type, int start_now)
 }
 
 #endif
-
-/* {{{ php_dl */
-PHPAPI void php_dl(const char *file, int type, zval *return_value, int start_now)
-{
-	/* Load extension */
-	if (php_load_extension(file, type, start_now) == FAILURE) {
-		RETVAL_FALSE;
-	} else {
-		RETVAL_TRUE;
-	}
-}
-/* }}} */
 
 PHP_MINFO_FUNCTION(dl)
 {

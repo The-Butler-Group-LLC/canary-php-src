@@ -239,6 +239,13 @@ static PHP_RSHUTDOWN_FUNCTION(phpdbg) /* {{{ */
 	return SUCCESS;
 } /* }}} */
 
+static ZEND_MODULE_POST_ZEND_DEACTIVATE_D(phpdbg) /* {{{ */
+{
+	phpdbg_release_watch_elements();
+
+	return SUCCESS;
+} /* }}} */
+
 /* {{{ Attempt to set the execution context for phpdbg
 	If the execution context was set previously it is returned
 	If the execution context was not set previously boolean true is returned
@@ -681,7 +688,9 @@ static zend_module_entry sapi_phpdbg_module_entry = {
 	PHP_RSHUTDOWN(phpdbg),
 	NULL,
 	PHPDBG_VERSION,
-	STANDARD_MODULE_PROPERTIES
+	NO_MODULE_GLOBALS,
+	ZEND_MODULE_POST_ZEND_DEACTIVATE_N(phpdbg),
+	STANDARD_MODULE_PROPERTIES_EX
 };
 
 static inline int php_sapi_phpdbg_module_startup(sapi_module_struct *module) /* {{{ */
@@ -944,7 +953,7 @@ static sapi_module_struct phpdbg_sapi_module = {
 	php_sapi_phpdbg_register_vars,  /* register server variables */
 	php_sapi_phpdbg_log_message,    /* Log message */
 	NULL,                           /* Get request time */
-	NULL,                           /* Child terminate */
+
 	STANDARD_SAPI_MODULE_PROPERTIES
 };
 /* }}} */
@@ -1051,7 +1060,7 @@ static void phpdbg_signal_handler(int sig, siginfo_t *info, void *context) /* {{
 } /* }}} */
 
 
-static ZEND_NORETURN void phpdbg_sighup_handler(int sig) /* {{{ */
+ZEND_NORETURN static void phpdbg_sighup_handler(int sig) /* {{{ */
 {
 	exit(0);
 } /* }}} */
@@ -1199,9 +1208,9 @@ phpdbg_main:
 			case 'z':
 				zend_extensions_len++;
 				if (zend_extensions_list) {
-					zend_extensions_list = realloc(zend_extensions_list, sizeof(char*) * zend_extensions_len);
+					zend_extensions_list = perealloc(zend_extensions_list, sizeof(char*) * zend_extensions_len, true);
 				} else {
-					zend_extensions_list = malloc(sizeof(char*) * zend_extensions_len);
+					zend_extensions_list = pemalloc(sizeof(char*) * zend_extensions_len, true);
 				}
 				zend_extensions_list[zend_extensions_len-1] = strdup(php_optarg);
 			break;
@@ -1440,7 +1449,7 @@ phpdbg_main:
 
 		if (php_request_startup() == FAILURE) {
 			PUTS("Could not startup");
-			return 1;
+			goto phpdbg_out;
 		}
 
 #ifndef _WIN32

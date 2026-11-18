@@ -13,13 +13,14 @@
  */
 
 #include "transliterator_class.h"
-extern "C" {
 #include "php_intl.h"
 #include "intl_error.h"
 #include "intl_convert.h"
 #include "intl_data.h"
+
+BEGIN_EXTERN_C()
 #include "transliterator_arginfo.h"
-}
+END_EXTERN_C()
 
 #include <unicode/utrans.h>
 
@@ -30,7 +31,7 @@ zend_object_handlers Transliterator_handlers;
 /* {{{ int transliterator_object_construct( zval *object, UTransliterator *utrans, UErrorCode *status )
  * Initialize internals of Transliterator_object.
  */
-U_CFUNC int transliterator_object_construct( zval *object,
+int transliterator_object_construct( zval *object,
 									 UTransliterator *utrans,
 									 UErrorCode *status )
 {
@@ -130,7 +131,7 @@ static zend_object *Transliterator_object_create( zend_class_entry *ce )
 /* {{{ clone handler for Transliterator */
 static zend_object *Transliterator_clone_obj( zend_object *object )
 {
-	Transliterator_object *to_orig = php_intl_transliterator_fetch_object(object);
+	const Transliterator_object *to_orig = php_intl_transliterator_fetch_object(object);
 	zend_object           *ret_val = Transliterator_ce_ptr->create_object(object->ce);
 	Transliterator_object  *to_new = php_intl_transliterator_fetch_object(ret_val);
 

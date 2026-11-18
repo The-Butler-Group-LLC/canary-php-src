@@ -1,7 +1,7 @@
 /*
  * The MIT License (MIT)
  *
- * Copyright (c) 2015-2023 Derick Rethans
+ * Copyright (c) 2015-2026 Derick Rethans
  * Copyright (c) 2018 MongoDB, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -31,16 +31,6 @@
 #include <math.h>
 #include <assert.h>
 #include <limits.h>
-
-#if defined(_MSC_VER)
-# define strtoll(s, f, b) _atoi64(s)
-#elif !defined(HAVE_STRTOLL)
-# if defined(HAVE_ATOLL)
-#  define strtoll(s, f, b) atoll(s)
-# else
-#  define strtoll(s, f, b) strtol(s, f, b)
-# endif
-#endif
 
 #define EOI      257
 #define TIME     258
@@ -76,6 +66,11 @@
 #define TIMELIB_RELATIVE       310
 
 #define TIMELIB_ERROR          999
+#define TIMELIB_MAX_ERRORS      16
+#define TIMELIB_MAX_ERRORS_S  "16"
+
+#define TIMELIB_WARN_TOO_MANY_WARNINGS_S "There are more than " TIMELIB_MAX_ERRORS_S " warnings, which are not returned"
+#define TIMELIB_ERR_TOO_MANY_ERRORS_S "There are more than " TIMELIB_MAX_ERRORS_S " errors, which are not returned"
 
 /* Some compilers like AIX, defines uchar in sys/types.h */
 #undef uchar
@@ -370,8 +365,20 @@ static timelib_error_message *alloc_error_message(timelib_error_message **messag
 
 static void add_warning(Scanner *s, int error_code, const char *error)
 {
-	timelib_error_message *message = alloc_error_message(&s->errors->warning_messages, &s->errors->warning_count);
+	timelib_error_message *message;
 
+	if (s->errors->warning_count == TIMELIB_MAX_ERRORS) {
+		message = alloc_error_message(&s->errors->warning_messages, &s->errors->warning_count);
+		message->error_code = TIMELIB_WARN_TOO_MANY_WARNINGS;
+		message->position = -1;
+		message->character = 0;
+		message->message = timelib_strdup(TIMELIB_WARN_TOO_MANY_WARNINGS_S);
+	}
+	if (s->errors->warning_count >= TIMELIB_MAX_ERRORS) {
+		return;
+	}
+
+	message = alloc_error_message(&s->errors->warning_messages, &s->errors->warning_count);
 	message->error_code = error_code;
 	message->position = s->tok ? s->tok - s->str : 0;
 	message->character = s->tok ? *s->tok : 0;
@@ -380,8 +387,20 @@ static void add_warning(Scanner *s, int error_code, const char *error)
 
 static void add_error(Scanner *s, int error_code, const char *error)
 {
-	timelib_error_message *message = alloc_error_message(&s->errors->error_messages, &s->errors->error_count);
+	timelib_error_message *message;
 
+	if (s->errors->error_count == TIMELIB_MAX_ERRORS) {
+		message = alloc_error_message(&s->errors->error_messages, &s->errors->error_count);
+		message->error_code = TIMELIB_ERR_TOO_MANY_ERRORS;
+		message->position = -1;
+		message->character = 0;
+		message->message = timelib_strdup(TIMELIB_ERR_TOO_MANY_ERRORS_S);
+	}
+	if (s->errors->error_count >= TIMELIB_MAX_ERRORS) {
+		return;
+	}
+
+	message = alloc_error_message(&s->errors->error_messages, &s->errors->error_count);
 	message->error_code = error_code;
 	message->position = s->tok ? s->tok - s->str : 0;
 	message->character = s->tok ? *s->tok : 0;
@@ -390,8 +409,20 @@ static void add_error(Scanner *s, int error_code, const char *error)
 
 static void add_pbf_warning(Scanner *s, int error_code, const char *error, const char *sptr, const char *cptr)
 {
-	timelib_error_message *message = alloc_error_message(&s->errors->warning_messages, &s->errors->warning_count);
+	timelib_error_message *message;
 
+	if (s->errors->warning_count == TIMELIB_MAX_ERRORS) {
+		message = alloc_error_message(&s->errors->warning_messages, &s->errors->warning_count);
+		message->error_code = TIMELIB_WARN_TOO_MANY_WARNINGS;
+		message->position = -1;
+		message->character = 0;
+		message->message = timelib_strdup(TIMELIB_WARN_TOO_MANY_WARNINGS_S);
+	}
+	if (s->errors->warning_count >= TIMELIB_MAX_ERRORS) {
+		return;
+	}
+
+	message = alloc_error_message(&s->errors->warning_messages, &s->errors->warning_count);
 	message->error_code = error_code;
 	message->position = cptr - sptr;
 	message->character = *cptr;
@@ -400,8 +431,20 @@ static void add_pbf_warning(Scanner *s, int error_code, const char *error, const
 
 static void add_pbf_error(Scanner *s, int error_code, const char *error, const char *sptr, const char *cptr)
 {
-	timelib_error_message *message = alloc_error_message(&s->errors->error_messages, &s->errors->error_count);
+	timelib_error_message *message;
 
+	if (s->errors->error_count == TIMELIB_MAX_ERRORS) {
+		message = alloc_error_message(&s->errors->error_messages, &s->errors->error_count);
+		message->error_code = TIMELIB_ERR_TOO_MANY_ERRORS;
+		message->position = -1;
+		message->character = 0;
+		message->message = timelib_strdup(TIMELIB_ERR_TOO_MANY_ERRORS_S);
+	}
+	if (s->errors->error_count >= TIMELIB_MAX_ERRORS) {
+		return;
+	}
+
+	message = alloc_error_message(&s->errors->error_messages, &s->errors->error_count);
 	message->error_code = error_code;
 	message->position = cptr - sptr;
 	message->character = *cptr;
@@ -516,7 +559,7 @@ static timelib_sll timelib_get_nr(const char **ptr, int max_length)
 
 static void timelib_skip_day_suffix(const char **ptr)
 {
-	if (isspace(**ptr)) {
+	if (isspace((unsigned char)**ptr)) {
 		return;
 	}
 	if (!timelib_strncasecmp(*ptr, "nd", 2) || !timelib_strncasecmp(*ptr, "rd", 2) ||!timelib_strncasecmp(*ptr, "st", 2) || !timelib_strncasecmp(*ptr, "th", 2)) {
@@ -555,7 +598,6 @@ static timelib_ull timelib_get_signed_nr(Scanner *s, const char **ptr, int max_l
 	int len = 0;
 
 	/* Skip over non-numeric chars */
-
 	while (((**ptr < '0') || (**ptr > '9')) && (**ptr != '+') && (**ptr != '-')) {
 		if (**ptr == '\0') {
 			add_error(s, TIMELIB_ERR_UNEXPECTED_DATA, "Found unexpected data");
@@ -568,6 +610,7 @@ static timelib_ull timelib_get_signed_nr(Scanner *s, const char **ptr, int max_l
 	str = timelib_calloc(1, max_length + 2);
 	str[0] = '+'; /* First position is the sign */
 	str_ptr = str + 1;
+
 
 	while ((**ptr == '+') || (**ptr == '-')) {
 		if (**ptr == '-') {
@@ -857,7 +900,7 @@ static timelib_long timelib_parse_tz_cor(const char **ptr, int *tz_not_found)
 
 	*tz_not_found = 1;
 
-	while (isdigit(**ptr) || **ptr == ':') {
+	while (isdigit((unsigned char)**ptr) || **ptr == ':') {
 		++*ptr;
 	}
 	end = *ptr;
@@ -922,7 +965,7 @@ static timelib_long timelib_parse_tz_minutes(const char **ptr, timelib_time *t)
 	}
 
 	++*ptr;
-	while (isdigit(**ptr)) {
+	while (isdigit((unsigned char)**ptr)) {
 		++*ptr;
 	}
 
@@ -2020,7 +2063,7 @@ timelib_time *timelib_strtotime(const char *s, size_t len, timelib_error_contain
 	in.errors->error_messages = NULL;
 
 	if (len > 0) {
-		while (isspace((unsigned char)*s) && s < e) {
+		while (isspace((unsigned char)*s) && s <= e) {
 			s++;
 		}
 		while (isspace((unsigned char)*e) && e > s) {

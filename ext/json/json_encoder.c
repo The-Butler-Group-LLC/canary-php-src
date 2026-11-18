@@ -163,11 +163,16 @@ static zend_result php_json_encode_array(smart_str *buf, zval *val, int options,
 			php_json_pretty_print_indent(buf, options, encoder);
 
 			if (php_json_escape_string(buf, ZSTR_VAL(prop_info->name), ZSTR_LEN(prop_info->name),
-					options & ~PHP_JSON_NUMERIC_CHECK, encoder) == FAILURE &&
-					(options & PHP_JSON_PARTIAL_OUTPUT_ON_ERROR) &&
-					buf->s) {
-				ZSTR_LEN(buf->s) -= 4;
-				smart_str_appendl(buf, "\"\"", 2);
+					options & ~PHP_JSON_NUMERIC_CHECK, encoder) == FAILURE) {
+				if (ZEND_HAS_OOM() || !(options & PHP_JSON_PARTIAL_OUTPUT_ON_ERROR)) {
+					PHP_JSON_HASH_UNPROTECT_RECURSION(obj);
+					return FAILURE;
+				}
+				if (buf->s) {
+					ZEND_ASSERT(ZSTR_LEN(buf->s) >= 4);
+					ZSTR_LEN(buf->s) -= 4;
+					smart_str_appendl(buf, "\"\"", 2);
+				}
 			}
 
 			smart_str_appendc(buf, ':');
@@ -269,6 +274,7 @@ static zend_result php_json_encode_array(smart_str *buf, zval *val, int options,
 						if (EG(exception)) {
 							PHP_JSON_HASH_UNPROTECT_RECURSION(recursion_rc);
 							zend_release_properties(prop_ht);
+							zval_ptr_dtor(&tmp);
 							return FAILURE;
 						}
 					}
@@ -278,11 +284,18 @@ static zend_result php_json_encode_array(smart_str *buf, zval *val, int options,
 					php_json_pretty_print_indent(buf, options, encoder);
 
 					if (php_json_escape_string(buf, ZSTR_VAL(key), ZSTR_LEN(key),
-								options & ~PHP_JSON_NUMERIC_CHECK, encoder) == FAILURE &&
-							(options & PHP_JSON_PARTIAL_OUTPUT_ON_ERROR) &&
-							buf->s) {
-						ZSTR_LEN(buf->s) -= 4;
-						smart_str_appendl(buf, "\"\"", 2);
+								options & ~PHP_JSON_NUMERIC_CHECK, encoder) == FAILURE) {
+						if (ZEND_HAS_OOM() || !(options & PHP_JSON_PARTIAL_OUTPUT_ON_ERROR)) {
+							PHP_JSON_HASH_UNPROTECT_RECURSION(recursion_rc);
+							zend_release_properties(prop_ht);
+							zval_ptr_dtor(&tmp);
+							return FAILURE;
+						}
+						if (buf->s) {
+							ZEND_ASSERT(ZSTR_LEN(buf->s) >= 4);
+							ZSTR_LEN(buf->s) -= 4;
+							smart_str_appendl(buf, "\"\"", 2);
+						}
 					}
 				} else {
 					php_json_pretty_print_char(buf, options, '\n');
@@ -377,7 +390,9 @@ zend_result php_json_escape_string(
 	checkpoint = buf->s ? ZSTR_LEN(buf->s) : 0;
 
 	/* pre-allocate for string length plus 2 quotes */
-	smart_str_alloc(buf, len+2, 0);
+	if (UNEXPECTED(smart_str_falloc(buf, len+2, 0, /* fallible */ true) == (size_t)-1)) {
+		return FAILURE;
+	}
 	smart_str_appendc(buf, '"');
 
 	pos = 0;
@@ -396,6 +411,11 @@ zend_result php_json_escape_string(
 				break;
 			}
 		} else {
+			/* An escaped byte can append six. */
+			if (ZEND_HAS_OOM()) {
+				ZSTR_LEN(buf->s) = checkpoint;
+				return FAILURE;
+			}
 			if (pos) {
 				smart_str_appendl(buf, s, pos);
 				s += pos;
@@ -577,6 +597,11 @@ static zend_result php_json_encode_serializable_object(smart_str *buf, zend_obje
 
 	ZEND_GUARD_PROTECT_RECURSION(guard, JSON);
 
+	/* jsonSerialize() may drop the last reference to the object, e.g. by
+	 * nulling a reference that aliases the encoded array slot; keep it alive
+	 * so the recursion guard and the identity check below stay valid. */
+	GC_ADDREF(obj);
+
 	zend_function *json_serialize_method = zend_hash_str_find_ptr(&ce->function_table, ZEND_STRL("jsonserialize"));
 	ZEND_ASSERT(json_serialize_method != NULL && "This should be guaranteed prior to calling this function");
 	zend_call_known_function(json_serialize_method, obj, ce, &retval, 0, NULL, NULL);
@@ -586,6 +611,7 @@ static zend_result php_json_encode_serializable_object(smart_str *buf, zend_obje
 			smart_str_appendl(buf, "null", 4);
 		}
 		ZEND_GUARD_UNPROTECT_RECURSION(guard, JSON);
+		OBJ_RELEASE(obj);
 		return FAILURE;
 	}
 
@@ -600,6 +626,7 @@ static zend_result php_json_encode_serializable_object(smart_str *buf, zend_obje
 	}
 
 	zval_ptr_dtor(&retval);
+	OBJ_RELEASE(obj);
 
 	return return_code;
 }
@@ -619,6 +646,9 @@ static zend_result php_json_encode_serializable_enum(smart_str *buf, zval *val, 
 
 zend_result php_json_encode_zval(smart_str *buf, zval *val, int options, php_json_encoder *encoder) /* {{{ */
 {
+	if (ZEND_HAS_OOM()) {
+		return FAILURE;
+	}
 again:
 	switch (Z_TYPE_P(val))
 	{

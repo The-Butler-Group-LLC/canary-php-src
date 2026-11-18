@@ -1,4 +1,4 @@
-PHP 8.6 UPGRADE NOTES
+PHP 8.7 UPGRADE NOTES
 
 1. Backward Incompatible Changes
 2. New Features
@@ -19,220 +19,148 @@ PHP 8.6 UPGRADE NOTES
 1. Backward Incompatible Changes
 ========================================
 
-- DOM:
-  . Properties previously documented as @readonly (e.g. DOMNode::$nodeType,
-    DOMDocument::$xmlEncoding, DOMEntity::$actualEncoding, ::$encoding,
-    ::$version) are now declared with asymmetric visibility
-    (public private(set)). Attempts to write to them from outside the
-    class now raise "Cannot modify private(set) property <class>::$<prop>
-    from global scope" instead of the prior readonly modification error.
-    ReflectionProperty::isWritable() also reports these properties
-    accurately.
-
-- GD:
-  . imagesetstyle(), imagefilter() and imagecrop() filter their
-    array arguments types/values and raise a TypeError/ValueError
-    accordingly.
-
-- PCNTL:
-  . pcntl_alarm() now raises a ValueError if the seconds argument is
-    lower than zero or greater than platform's UINT_MAX.
-
-- PCRE:
-  . preg_grep() now returns false instead of a partial array when a PCRE
-    execution error occurs (e.g. malformed UTF-8 input with the /u modifier).
-    This is consistent with other preg_* functions.
-
-- Phar:
-  . Phar::mungServer() now raises a ValueError when an invalid
-    argument value is passed instead of being silently ignored.
-
-- PGSQL:
-  . pg_fetch_object() now reports the ValueError for a non-empty
-    $constructor_args on a class without a constructor on the
-    $constructor_args argument instead of $class. Errors raised when
-    the requested class is not instantiable (abstract, interface, enum)
-    now surface before the row is fetched.
-
-- Posix:
-  . posix_access() now raises a ValueError when an invalid $flags
-    argument value is passed.
-  . posix_mkfifo() now raises a ValueError when an invalid $permissions
-    argument value is passed.
-
-- Session:
-  . A ValueError is not thrown if $name is a string containing null bytes in
-    session_module_name().
-  . session_encode() now returns an empty string instead of false for empty
-    sessions. It only returns false now when the session data could not be
-    encoded. This mainly happens with the default serialization handler
-    if a key contains the pipe | character.
-  . When session.lazy_write is enabled and a session handler implements
-    SessionUpdateTimestampHandlerInterface, sessions that were read as empty
-    and remain empty at write time will now trigger updateTimestamp() instead
-    of write(). Previously, write() was always called for empty sessions
-    because session_encode() returned false, bypassing the lazy_write
-    comparison. Custom session handlers that rely on write() being called
-    with empty data (e.g. to destroy the session) should implement the same
-    logic in their updateTimestamp() method.
-
-- SPL:
-  . SplFileObject::next() now advances the stream when no prior current()
-    call has cached a line. A subsequent current() call returns the new
-    line rather than the previous one.
-  . SplFileObject::fgets() no longer caches the returned line for
-    subsequent current() calls. current() now re-reads from the current
-    stream position instead of returning the line fgets() just returned.
-  . SplFileObject::next() past EOF no longer increments key() without
-    bound. SplFileObject::seek() past EOF now produces the same key()
-    value as SplTempFileObject; the two previously returned different
-    values.
-
-- Standard:
-  . Form feed (\f) is now added in the default trimmed characters of trim(),
-    rtrim() and ltrim(). RFC: https://wiki.php.net/rfc/trim_form_feed
-  . array_filter() now raises a ValueError when an invalid $mode
-    argument value is passed.
-  . array_change_key_case() now raises a ValueError when an invalid $case
-    argument value is passed.
-  . getenv() and putenv() now raises a ValueError when the first argument
-    contains null bytes.
-  . linkinfo() now raises a ValueError when the $path argument is empty.
-  . pathinfo() now raises a ValueError when an invalid $flag
-    argument value is passed.
-  . scandir() now raises a ValueError when an invalid $sorting_order
-    argument value is passed.
-
-- Zip:
-  . ZipArchive::extractTo now raises a TypeError for the
-    files argument if one or more of the entries is not
-    a string.
-
-- Zlib:
-  . deflate_init() now raises a TypeError when the value for option
-    "level", "memory", "window", or "strategy" is not of type int.
-
-========================================
-2. New Features
-========================================
-
 - Core:
-  . It is now possible to use reference assign on WeakMap without the key
-    needing to be present beforehand.
+  . Block declaration support for the encoding declare has been removed as it
+    did not function properly.
 
-- Fileinfo:
-  . finfo_file() now works with remote streams.
+- Curl:
+  . curl_multi_exec() now throws a TypeError when $still_running cannot be
+    converted to an int.
+  . Nested arrays in CURLOPT_POSTFIELDS now throw a TypeError, instead of being
+    silently converted to the string "Array".
+  . Negative values for CURLOPT_POSTREDIR are now rejected, making
+    curl_setopt() return false, instead of being silently interpreted as a
+    combination of redirect types.
 
-- Intl:
-  . Added IntlNumberRangeFormatter class to format an interval of two numbers
-    with a given skeleton, locale, IntlNumberRangeFormatter::COLLAPSE_AUTO,
-    IntlNumberRangeFormatter::COLLAPSE_NONE,
-    IntlNumberRangeFormatter::COLLAPSE_UNIT,
-    IntlNumberRangeFormatter::COLLAPSE_ALL collapse and
-    IntlNumberRangeFormatter::IDENTITY_FALLBACK_SINGLE_VALUE,
-    IntlNumberRangeFormatter::IDENTITY_FALLBACK_APPROXIMATELY_OR_SINGLE_VALUE,
-    IntlNumberRangeFormatter::IDENTITY_FALLBACK_APPROXIMATELY and
-    IntlNumberRangeFormatter::IDENTITY_FALLBACK_RANGE identity fallbacks.
-    It is supported from icu 63.
-
-- JSON:
-  . Added extra info about error location to the JSON error messages returned
-    from json_last_error_msg() and JsonException message.
-
-- Phar:
-  . Overriding the getMTime() and getPathname() methods of SplFileInfo now
-    influences the result of the phar buildFrom family of functions.
-    This makes it possible to override the timestamp and names of files.
-
-- Streams:
-  . Added stream socket context option so_reuseaddr that allows disabling
-    address reuse (SO_REUSEADDR) and explicitly uses SO_EXCLUSIVEADDRUSE on
-    Windows.
-  . Added stream socket context options so_keepalive, tcp_keepidle,
-    tcp_keepintvl and tcp_keepcnt that allow setting socket keepalive
-    options.
-  . Allowed casting casting filtered streams as file descriptor for select.
-
-========================================
-3. Changes in SAPI modules
-========================================
-
-========================================
-4. Deprecated Functionality
-========================================
-
-- Mbstring:
-  . Mbregex has been deprecated, because the underlying Oniguruma library
-    is no longer maintained.
-    RFC: https://wiki.php.net/rfc/eol-oniguruma
-
-========================================
-5. Changed Functions
-========================================
-
-- GMP:
-  . gmp_fact() now throws a ValueError() if $num does not fit into
-    a unsigned long.
-  . gmp_pow(), gmp_binomial(), gmp_root() and gmp_rootrem() now throw a
-    ValueError if their second argument does not fit into an unsigned long.
-  . The shift (<<, >>) and exponentiation (**) operators on GMP objects
-    now throw a ValueError if the right operand does not fit into an
-    unsigned long.
-  . gmp_powm() modulo-by-zero now raises a DivisionByZeroError whose
-    message includes the function name and argument index ($modulus).
-
-- mysqli:
-  . The return structure of mysqli_get_charset() no longer contains
-    the undocumented "comment" element. The value of "charsetnr" is
-    now set to a constant 0 as this number was an implementation detail
-    that should not have been exposed to the public.
-
-- OpenSSL:
-  . Output of openssl_x509_parse() contains criticalExtensions listing all
-    critical certificate extensions.
-
-- Phar:
-  . Phar::mungServer() now supports reference values.
-
-- Sockets:
-  . socket_addrinfo_lookup() now has an additional optional argument $error
-    when not null, and on failure, gives the error code (one of the EAI_*
-    constants).
-
-========================================
-6. New Functions
-========================================
+- PDO:
+  . PDOStatement::bindColumn() now throws a ValueError when the column name is
+    not present in the result set. It previously reported the condition
+    through PDO::ATTR_ERRMODE and returned false.
 
 - Reflection:
-  . ReflectionConstant::inNamespace()
-  . Added ReflectionProperty::isReadable() and ReflectionProperty::isWritable().
-    RFC: https://wiki.php.net/rfc/isreadable-iswriteable
-  . Added ReflectionParameter::getDocComment().
-    RFC: https://wiki.php.net/rfc/parameter-doccomments
+  . The public $name and $class properties of ReflectionClass,
+    ReflectionClassConstant, ReflectionProperty, ReflectionMethod,
+    ReflectionFunctionAbstract, ReflectionParameter, ReflectionExtension,
+    ReflectionZendExtension, ReflectionAttribute and ReflectionConstant are
+    now readonly.
 
-- Intl:
-  . `grapheme_strrev()` returns strrev for grapheme cluster unit.
-    RFC: https://wiki.php.net/rfc/grapheme_strrev
+- SOAP:
+  . SoapClient no longer follows an HTTP redirect to a different origin
+    (scheme, host, or port) and throws a SoapFault instead. Previously the
+    request body and the configured credentials and headers were resent to
+    the new origin. A redirect from http to https on the same host is still
+    followed. Set the new follow_cross_origin_redirects option to true to
+    restore the previous behavior.
 
-- mysqli:
-  . Added `mysqli::quote_string()` and `mysqli_quote_string()`.
-    RFC: https://wiki.php.net/rfc/mysqli_quote_string
+- Session:
+  . Setting session.cookie_path to a value containing one of ";\r\n", or
+    session.cookie_domain to a value containing one of ",; \t\r\n\013\014",
+    now emits a warning and leaves the setting unchanged. Previously such a
+    value was appended to the Set-Cookie header verbatim, which let an
+    application terminate one attribute and append further ones.
 
 - Standard:
-  . `clamp()` returns the given value if in range, else return the nearest
-    bound.
-    RFC: https://wiki.php.net/rfc/clamp_v2
+  . ini_get_all() now matches extension names case-insensitively using ASCII
+    rules, independently of the current locale. Names that differ only in
+    capitalization from a loaded extension now succeed instead of emitting a
+    warning and returning false.
+    RFC: https://wiki.php.net/rfc/case_insensitive_ini_get_all
+  . bindec(), octdec(), hexdec() and base_convert() now throw an Exception
+    when the passed string contains characters that are invalid for the
+    specified number base.
+  . The number of filters that can be chained in a php://filter URL is limited
+    to 16 by default. Set the stream context option max_filter_count to change
+    this.
 
-- Zip:
-  . Added ZipArchive::openString() method.
+========================================
+2. New Features
+========================================
+
+- Curl:
+  . Multiple files can now be uploaded with the same field name by passing an
+    array of CURLFile or CURLStringFile objects to CURLOPT_POSTFIELDS.
+  . Support for upstream options CURLOPT_ECH, CURLOPT_HAPROXY_CLIENT_IP, and
+    CURLOPT_SERVER_RESPONSE_TIMEOUT_MS.
+
+- Intl:
+  . Added IntlRelativeDateTimeFormatter to format relative date and time offsets
+    using locale-specific text, such as "yesterday" or "in 3 days". Its format()
+    method uses a textual form when available and a numeric form otherwise,
+    while formatNumeric() always uses a numeric form. combineDateAndTime()
+    combines already formatted date and time strings according to the locale.
+    The constructor accepts an optional NumberFormatter to customize numeric
+    output; subsequent configuration changes to that object are reflected in
+    formatting results. Styles, capitalization contexts, and units are selected
+    using the IntlRelativeDateTimeFormatterStyle,
+    IntlRelativeDateTimeFormatterCapitalization, and
+    IntlRelativeDateTimeFormatterUnit enums, respectively.
+    RFC: https://wiki.php.net/rfc/reldateformatter
+  . Locale::acceptFromHttp() and locale_accept_from_http() now accept an
+    optional $availableLocales array argument. When given, the
+    Accept-Language header is matched against these locales instead of all
+    locales known to ICU, and the matching entry is returned as passed.
+    A ValueError is thrown if the array is empty or contains an invalid
+    locale, and a TypeError if it contains a non-string value.
+
+- Streams:
+  . The so_linger, so_rcvbuf and so_sndbuf stream socket context options are
+    now also applied to unix and unix datagram sockets.
+
+========================================
+3. Changes in SAPI modules
+========================================
+
+========================================
+4. Deprecated Functionality
+========================================
+
+========================================
+5. Changed Functions
+========================================
+
+- Standard:
+  . stream_select() no longer fails once a watched descriptor exceeds
+    FD_SETSIZE. The descriptor set now grows on demand on both POSIX (bitset)
+    and Windows (winsock fd_set), so code watching many streams works without
+    rebuilding PHP with --enable-fd-setsize. On Windows, selecting on more than
+    64 pipe or file handles no longer crashes; it fails with a warning, as that
+    path remains bounded by WaitForMultipleObjects().
+
+========================================
+6. New Functions
+========================================
+
+- Intl:
+  . Added Transliterator::toRules() and transliterator_to_rules() to export
+    rules that can be used to recreate a transliterator. The optional
+    $escapeUnprintable argument escapes unprintable characters when true.
+  . Added Collator::getRules() and collator_get_rules() to retrieve collation
+    tailoring rules as a UTF-8 string. These describe locale-specific adjustments
+    to the root collation order; the full root/UCA rules are not included. An
+    empty string is returned if no tailoring rules are available, or false if
+    the rules cannot be converted to UTF-8.
+  . Added Spoofchecker::getRestrictionLevel() to retrieve the configured
+    restriction level as one of the Spoofchecker restriction level constants.
 
 ========================================
 7. New Classes and Interfaces
 ========================================
 
-- Standard:
-  . enum SortDirection
-    RFC: https://wiki.php.net/rfc/sort_direction_enum
+- Intl:
+  . IntlRelativeDateTimeFormatter
+  . enum IntlRelativeDateTimeFormatterStyle
+  . enum IntlRelativeDateTimeFormatterCapitalization
+  . enum IntlRelativeDateTimeFormatterUnit
+    RFC: https://wiki.php.net/rfc/reldateformatter
+  . Added IntlNumberFormatter class to format a number with a given locale
+    and ICU number skeleton, which also covers measurement units, e.g.
+    "measure-unit/speed-kilometer-per-hour unit-width-full-name".
+    IntlNumberFormatter::format() accepts an int, a float or a decimal
+    string without exponent, the latter being formatted with arbitrary
+    precision.
+    IntlNumberFormatter::createFromSkeleton() rejects a scale/ option in
+    exponent notation, e.g. "scale/1e3".
+    It is supported from icu 63.
 
 ========================================
 8. Removed Extensions and SAPIs
@@ -242,59 +170,25 @@ PHP 8.6 UPGRADE NOTES
 9. Other Changes to Extensions
 ========================================
 
-- Hash:
-  . The bundled version of xxHash was upgraded to 0.8.2.
-
-- mysqli
-  . Added new constant MYSQLI_OPT_COMPRESS.
-
 ========================================
 10. New Global Constants
 ========================================
 
-- Sockets:
-  . TCP_USER_TIMEOUT (Linux only).
-  . AF_UNSPEC.
-  . EAI_BADFLAGS.
-  . EAI_NONAME.
-  . EAI_AGAIN.
-  . EAI_FAIL.
-  . EAI_NODATA.
-  . EAI_FAMILY.
-  . EAI_SOCKTYPE.
-  . EAI_SERVICE.
-  . EAI_ADDRFAMILY.
-  . EAI_SYSTEM.
-  . EAI_OVERFLOW
-  . EAI_INPROGRESS.
-  . EAI_CANCELED.
-  . EAI_NOTCANCELED.
-  . EAI_ALLDONE.
-  . EAI_INTR.
-  . EAI_IDN_ENCODE.
-
-- Standard
-  . ARRAY_FILTER_USE_VALUE.
+- Curl:
+  . New options: CURLOPT_ECH, CURLOPT_HAPROXY_CLIENT_IP,
+    CURLOPT_SERVER_RESPONSE_TIMEOUT_MS.
+  . CURLOPT_MAIL_RCPT_ALLOWFAILS is the correctly spelled alternative to
+    CURLOPT_MAIL_RCPT_ALLLOWFAILS.
 
 ========================================
 11. Changes to INI File Handling
 ========================================
 
-- Mbstring:
-  . The mbstring.detect_order INI directive now updates the internal detection
-    order when changed at runtime via ini_set(). Previously, runtime changes
-    using ini_set() did not take effect for mb_detect_order(). Setting the
-    directive to NULL or an empty string at runtime now leaves the previously
-    configured detection order unchanged.
-
-- Mysqli:
-  . mysqli.default_port now checks the validity of the value which should be
-    between 0 and 65535 included.
-
 - Opcache:
-  . opcache.jit_debug accepts a new flag: ZEND_JIT_DEBUG_TRACE_EXIT_INFO_SRC.
-    When used along with ZEND_JIT_DEBUG_TRACE_EXIT_INFO, the source of exit
-    points is printed in exit info output, in debug builds.
+  . opcache.max_accelerated_files now defaults to 16229 (previously 10000),
+    accepts values up to 1048793 (previously 1000000), and logs a warning for
+    values other than 223, 463, 983, 1979, 3907, 7963, 16229, 32531, 65407,
+    130987, 262237, 524521 and 1048793.
 
 ========================================
 12. Windows Support
@@ -309,38 +203,48 @@ PHP 8.6 UPGRADE NOTES
 ========================================
 
 - Core:
-  . `printf()` using only `%s` and `%d` will be compiled into the equivalent
-    string interpolation, avoiding the overhead of a function call and
-    repeatedly parsing the format string.
-  . Arguments are now passed more efficiently to known constructors (e.g. when
-    using new self()).
-  . array_map() using a first-class callable or partial function application
-    callback will be compiled into the equivalent foreach-loop, avoiding the
-    creation of intermediate Closures, the overhead of calling userland
-    callbacks from internal functions and providing for better insight for the
-    JIT.
-  . The performance of the TAILCALL VM has been improved.
-  . The TAILCALL VM is now enabled on Windows when compiling with Clang >= 19
-    x86_64.
+  . A flat unkeyed list assignment from an array literal with one value per
+    target, such as [$a, $b] = [$b, $a], no longer builds the array when the
+    result is unused: the values are evaluated in order, a variable among them
+    is copied, and they are assigned to the targets directly. A value its
+    target does not keep is now released at that assignment instead of after
+    the last one.
+  . The garbage collector now raises its threshold when its runs traverse a
+    large graph of live objects, so that it runs less often. Before, it
+    traversed the whole graph again after every 10000 possible roots.
+  . Improved performance of integer to string conversion (string casts, echo,
+    implode(), json_encode(), serialize(), var_export() and others).
 
 - DOM:
-  . Made splitText() faster and consume less memory.
-
-- JSON:
-  . Improve performance of encoding arrays and objects.
-  . Improved performance of indentation generation in json_encode()
-    when using PHP_JSON_PRETTY_PRINT.
+  . Parsing HTML with Dom\HTMLDocument or innerHTML uses much less memory for
+    small inputs.
 
 - Standard:
-  . Improved performance of array_fill_keys().
-  . Improved performance of array_map() with multiple arrays passed.
-  . Improved performance of array_unshift().
-  . Improved performance of array_walk().
-  . Improved performance of intval('+0b...', 2) and intval('0b...', 2).
-  . Improved performance of str_split().
+  . Improved performance of strcspn() and strpbrk() when searching longer strings
+    with a single-byte character mask.
+  . Improved performance of array_chunk() when not preserving keys.
+  . Improved performance of array_splice() when inserting without removing
+    elements.
+  . Improved performance of str_rot13().
+  . Improved performance of pack() for large strings using the a, A and Z
+    formats.
+  . Improved performance of htmlspecialchars(), htmlentities(),
+    html_entity_decode() and get_html_translation_table(), especially with
+    UTF-8.
+  . htmlspecialchars() returns its input without copying it when nothing needs
+    encoding.
+  . Improved performance of in_array() and array_search() in strict mode when
+    searching for a string.
 
-- URI:
-  . Reduced allocations when reading RFC3986 IPv6/IPFuture hosts and paths.
+- MBString:
+  . Improved performance of mb_strlen for UTF-8 strings.
+  . Improved performance of mb_substr and mb_strpos for UTF-8 strings.
 
-- Zip:
-  . Avoid string copies in ZipArchive::addFromString().
+- PDO:
+  . Improved performance of fetching rows with PDO::FETCH_BOTH, the default
+    fetch mode, for results with more than 4 columns.
+
+- PDO_PGSQL:
+  . Improved performance of the SQL parser that handles placeholders in
+    PDO::prepare() and, with emulated prepares, PDOStatement::execute().
+  . Improved performance of fetching integer columns.

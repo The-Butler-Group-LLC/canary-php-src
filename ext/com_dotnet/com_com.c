@@ -17,8 +17,6 @@
 #endif
 
 #include "php.h"
-#include "php_ini.h"
-#include "ext/standard/info.h"
 #include "php_com_dotnet.h"
 #include "php_com_dotnet_internal.h"
 #include "Zend/zend_exceptions.h"
@@ -322,7 +320,7 @@ PHP_FUNCTION(com_get_active_object)
 		IDispatch_Release(obj);
 	}
 	if (unk) {
-		IUnknown_Release(obj);
+		IUnknown_Release(unk);
 	}
 	efree(module);
 }
@@ -640,7 +638,7 @@ zend_result php_com_do_invoke(php_com_dotnet_object *obj, zend_string *name,
 
 	if (FAILED(hr)) {
 		char *winerr = php_win32_error_to_msg(hr);
-		spprintf(&msg, 0, "Unable to lookup `%s': %s", ZSTR_VAL(name), winerr);
+		spprintf(&msg, 0, "Unable to lookup `%pS': %s", name, winerr);
 		php_win32_error_msg_free(winerr);
 		php_com_throw_exception(hr, msg);
 		efree(msg);
@@ -672,7 +670,8 @@ PHP_FUNCTION(com_create_guid)
 /* {{{ Connect events from a COM object to a PHP object */
 PHP_FUNCTION(com_event_sink)
 {
-	zval *object, *sinkobject;
+	zend_object *object;
+	zend_object *sinkobject;
 	zend_string *sink_str = NULL;
 	HashTable *sink_ht = NULL;
 	zend_string *type_lib_name = NULL;
@@ -681,8 +680,8 @@ PHP_FUNCTION(com_event_sink)
 	ITypeInfo *typeinfo = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(2, 3)
-		Z_PARAM_OBJECT_OF_CLASS(object, php_com_variant_class_entry)
-		Z_PARAM_OBJECT(sinkobject)
+		Z_PARAM_OBJ_OF_CLASS(object, php_com_variant_class_entry)
+		Z_PARAM_OBJ(sinkobject)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_ARRAY_HT_OR_STR_OR_NULL(sink_ht, sink_str)
 	ZEND_PARSE_PARAMETERS_END();
@@ -690,7 +689,7 @@ PHP_FUNCTION(com_event_sink)
 	RETVAL_FALSE;
 
 	php_com_initialize();
-	obj = CDNO_FETCH(object);
+	obj = (php_com_dotnet_object*)object;
 
 	if (sink_ht) {
 		/* 0 => typelibname, 1 => dispname */

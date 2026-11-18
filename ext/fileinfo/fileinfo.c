@@ -29,7 +29,6 @@
 #include "php_ini.h"
 #include "ext/standard/info.h"
 #include "ext/standard/file.h" /* needed for context stuff */
-#include "Zend/zend_attributes.h"
 #include "Zend/zend_exceptions.h"
 #include "php_fileinfo.h"
 #include "fileinfo_arginfo.h"
@@ -43,9 +42,7 @@ typedef struct _finfo_object {
 	zend_object zo;
 } finfo_object;
 
-static inline finfo_object *php_finfo_fetch_object(zend_object *obj) {
-	return (finfo_object *)((char*)(obj) - offsetof(finfo_object, zo));
-}
+#define php_finfo_fetch_object(obj) ZEND_CONTAINER_OF(obj, finfo_object, zo)
 
 #define Z_FINFO_P(zv) php_finfo_fetch_object(Z_OBJ_P((zv)))
 
@@ -300,7 +297,7 @@ PHP_FUNCTION(finfo_file)
 	struct magic_set *magic = Z_FINFO_P(self)->magic;
 
 	if (UNEXPECTED(ZSTR_LEN(path) == 0)) {
-		zend_argument_must_not_be_empty_error(2);
+		zend_argument_must_not_be_empty_error(hasThis() ? 1 : 2);
 		RETURN_THROWS();
 	}
 	php_stream_context *context = php_stream_context_from_zval(zcontext, false);

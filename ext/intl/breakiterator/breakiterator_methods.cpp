@@ -21,20 +21,18 @@
 
 #include "breakiterator_iterators.h"
 
-extern "C" {
 #include "../php_intl.h"
 #define USE_BREAKITERATOR_POINTER 1
 #include "breakiterator_class.h"
 #include "../locale/locale.h"
 #include <zend_exceptions.h>
 #include <zend_interfaces.h>
-}
 
 using PHP::CodePointBreakIterator;
 using icu::BreakIterator;
 using icu::Locale;
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, __construct)
+PHP_METHOD(IntlBreakIterator, __construct)
 {
 	zend_throw_exception( NULL,
 		"An object of this type cannot be created with the new operator",
@@ -70,42 +68,42 @@ static void _breakiter_factory(
 	breakiterator_object_create(return_value, biter, 1);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, createWordInstance)
+PHP_METHOD(IntlBreakIterator, createWordInstance)
 {
 	_breakiter_factory(
 			&BreakIterator::createWordInstance,
 			INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, createLineInstance)
+PHP_METHOD(IntlBreakIterator, createLineInstance)
 {
 	_breakiter_factory(
 			&BreakIterator::createLineInstance,
 			INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, createCharacterInstance)
+PHP_METHOD(IntlBreakIterator, createCharacterInstance)
 {
 	_breakiter_factory(
 			&BreakIterator::createCharacterInstance,
 			INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, createSentenceInstance)
+PHP_METHOD(IntlBreakIterator, createSentenceInstance)
 {
 	_breakiter_factory(
 			&BreakIterator::createSentenceInstance,
 			INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, createTitleInstance)
+PHP_METHOD(IntlBreakIterator, createTitleInstance)
 {
 	_breakiter_factory(
 			&BreakIterator::createTitleInstance,
 			INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, createCodePointInstance)
+PHP_METHOD(IntlBreakIterator, createCodePointInstance)
 {
 	intl_error_reset(NULL);
 
@@ -115,7 +113,7 @@ U_CFUNC PHP_METHOD(IntlBreakIterator, createCodePointInstance)
 	breakiterator_object_create(return_value, cpbi, 1);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, getText)
+PHP_METHOD(IntlBreakIterator, getText)
 {
 	BREAKITER_METHOD_INIT_VARS;
 	object = ZEND_THIS;
@@ -131,7 +129,7 @@ U_CFUNC PHP_METHOD(IntlBreakIterator, getText)
 	}
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, setText)
+PHP_METHOD(IntlBreakIterator, setText)
 {
 	UText	*ut = NULL;
 	zend_string	*text;
@@ -171,7 +169,7 @@ static void _breakiter_no_args_ret_int32(
 
 	BREAKITER_METHOD_FETCH_OBJECT;
 
-	int32_t res = (bio->biter->*func)();
+	const int32_t res = (bio->biter->*func)();
 
 	RETURN_LONG((zend_long)res);
 }
@@ -195,30 +193,30 @@ static void _breakiter_int32_ret_int32(
 		RETURN_THROWS();
 	}
 
-	int32_t res = (bio->biter->*func)((int32_t)arg);
+	const int32_t res = (bio->biter->*func)((int32_t)arg);
 
 	RETURN_LONG((zend_long)res);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, first)
+PHP_METHOD(IntlBreakIterator, first)
 {
 	_breakiter_no_args_ret_int32(&BreakIterator::first,
 			INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, last)
+PHP_METHOD(IntlBreakIterator, last)
 {
 	_breakiter_no_args_ret_int32(&BreakIterator::last,
 			INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, previous)
+PHP_METHOD(IntlBreakIterator, previous)
 {
 	_breakiter_no_args_ret_int32(&BreakIterator::previous,
 			INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, next)
+PHP_METHOD(IntlBreakIterator, next)
 {
 	zval *arg = NULL;
 
@@ -237,7 +235,7 @@ U_CFUNC PHP_METHOD(IntlBreakIterator, next)
 	}
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, current)
+PHP_METHOD(IntlBreakIterator, current)
 {
 	BREAKITER_METHOD_INIT_VARS;
 	object = ZEND_THIS;
@@ -246,26 +244,26 @@ U_CFUNC PHP_METHOD(IntlBreakIterator, current)
 
 	BREAKITER_METHOD_FETCH_OBJECT;
 
-	int32_t res = bio->biter->current();
+	const int32_t res = bio->biter->current();
 
 	RETURN_LONG((zend_long)res);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, following)
+PHP_METHOD(IntlBreakIterator, following)
 {
 	_breakiter_int32_ret_int32(
 			&BreakIterator::following,
 			INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, preceding)
+PHP_METHOD(IntlBreakIterator, preceding)
 {
 	_breakiter_int32_ret_int32(
 			&BreakIterator::preceding,
 			INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, isBoundary)
+PHP_METHOD(IntlBreakIterator, isBoundary)
 {
 	zend_long offset;
 	BREAKITER_METHOD_INIT_VARS;
@@ -282,12 +280,12 @@ U_CFUNC PHP_METHOD(IntlBreakIterator, isBoundary)
 
 	BREAKITER_METHOD_FETCH_OBJECT;
 
-	UBool res = bio->biter->isBoundary((int32_t)offset);
+	const UBool res = bio->biter->isBoundary((int32_t)offset);
 
 	RETURN_BOOL((zend_long)res);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, getLocale)
+PHP_METHOD(IntlBreakIterator, getLocale)
 {
 	zend_long	locale_type;
 	BREAKITER_METHOD_INIT_VARS;
@@ -297,11 +295,9 @@ U_CFUNC PHP_METHOD(IntlBreakIterator, getLocale)
 		Z_PARAM_LONG(locale_type)
 	ZEND_PARSE_PARAMETERS_END();
 
-	/* TODO: Change to ValueError? */
 	if (locale_type != ULOC_ACTUAL_LOCALE && locale_type != ULOC_VALID_LOCALE) {
-		intl_error_set(NULL, U_ILLEGAL_ARGUMENT_ERROR,
-			"invalid locale type");
-		RETURN_FALSE;
+		zend_argument_value_error(1, "must be either Locale::ACTUAL_LOCALE or Locale::VALID_LOCALE");
+		RETURN_THROWS();
 	}
 
 	BREAKITER_METHOD_FETCH_OBJECT;
@@ -313,7 +309,7 @@ U_CFUNC PHP_METHOD(IntlBreakIterator, getLocale)
 	RETURN_STRING(locale.getName());
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, getPartsIterator)
+PHP_METHOD(IntlBreakIterator, getPartsIterator)
 {
 	zend_long key_type = 0;
 	BREAKITER_METHOD_INIT_VARS;
@@ -338,7 +334,7 @@ U_CFUNC PHP_METHOD(IntlBreakIterator, getPartsIterator)
 		object, return_value, (parts_iter_key_type)key_type);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, getErrorCode)
+PHP_METHOD(IntlBreakIterator, getErrorCode)
 {
 	BREAKITER_METHOD_INIT_VARS;
 	object = ZEND_THIS;
@@ -350,7 +346,7 @@ U_CFUNC PHP_METHOD(IntlBreakIterator, getErrorCode)
 	RETURN_LONG((zend_long)BREAKITER_ERROR_CODE(bio));
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, getErrorMessage)
+PHP_METHOD(IntlBreakIterator, getErrorMessage)
 {
 	zend_string* message = NULL;
 	BREAKITER_METHOD_INIT_VARS;
@@ -366,7 +362,7 @@ U_CFUNC PHP_METHOD(IntlBreakIterator, getErrorMessage)
 	RETURN_STR(message);
 }
 
-U_CFUNC PHP_METHOD(IntlBreakIterator, getIterator)
+PHP_METHOD(IntlBreakIterator, getIterator)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 

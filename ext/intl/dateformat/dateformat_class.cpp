@@ -13,13 +13,13 @@
 */
 #include <unicode/udat.h>
 
-extern "C" {
 #include "dateformat_class.h"
 #include "php_intl.h"
 #include "dateformat_data.h"
 #include "dateformat.h"
+BEGIN_EXTERN_C()
 #include "dateformat_arginfo.h"
-}
+END_EXTERN_C()
 
 #include <zend_exceptions.h>
 
@@ -66,12 +66,19 @@ zend_object *IntlDateFormatter_object_create(zend_class_entry *ce)
 /* {{{ IntlDateFormatter_object_clone */
 zend_object *IntlDateFormatter_object_clone(zend_object *object)
 {
-	IntlDateFormatter_object     *dfo = php_intl_dateformatter_fetch_object(object);
+	const IntlDateFormatter_object     *dfo = php_intl_dateformatter_fetch_object(object);
 	zend_object              *new_obj = IntlDateFormatter_ce_ptr->create_object(object->ce);
 	IntlDateFormatter_object *new_dfo = php_intl_dateformatter_fetch_object(new_obj);
 
 	/* clone standard parts */
 	zend_objects_clone_members(&new_dfo->zo, &dfo->zo);
+
+	new_dfo->date_type = dfo->date_type;
+	new_dfo->time_type = dfo->time_type;
+	new_dfo->calendar = dfo->calendar;
+	if (dfo->requested_locale != NULL) {
+		new_dfo->requested_locale = estrdup(dfo->requested_locale);
+	}
 
 	/* clone formatter object */
 	if (DATE_FORMAT_OBJECT(dfo) != NULL) {

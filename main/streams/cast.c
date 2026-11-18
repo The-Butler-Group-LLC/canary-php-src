@@ -77,10 +77,10 @@ static int stream_cookie_writer(void *cookie, const char *buffer, int size)
 	return php_stream_write((php_stream *)cookie, (char *)buffer, size);
 }
 
-static PHP_FPOS_T stream_cookie_seeker(void *cookie, zend_off_t position, int whence)
+static PHP_FPOS_T stream_cookie_seeker(void *cookie, PHP_FPOS_T position, int whence)
 {
 
-	return (PHP_FPOS_T)php_stream_seek((php_stream *)cookie, position, whence);
+	return (PHP_FPOS_T)php_stream_seek((php_stream *)cookie, (zend_off_t)position, whence);
 }
 
 static int stream_cookie_closer(void *cookie)
@@ -187,15 +187,15 @@ void php_stream_mode_sanitize_fdopen_fopencookie(php_stream *stream, char *resul
 	result[res_curs] = '\0';
 }
 /* }}} */
-
 /* {{{ php_stream_cast */
-PHPAPI zend_result _php_stream_cast(php_stream *stream, int castas, void **ret, int show_err)
+PHPAPI zend_result php_stream_cast(php_stream *stream, int castas, void **ret, int show_err)
 {
 	int flags = castas & PHP_STREAM_CAST_MASK;
 	castas &= ~PHP_STREAM_CAST_MASK;
 
 	/* synchronize our buffer (if possible) */
-	if (ret && castas != PHP_STREAM_AS_FD_FOR_SELECT) {
+	if (ret && castas != PHP_STREAM_AS_FD_FOR_SELECT && castas != PHP_STREAM_AS_FD_FOR_COPY
+			&& castas != PHP_STREAM_AS_FD_FOR_POLL) {
 		php_stream_flush(stream);
 		if (stream->ops->seek && (stream->flags & PHP_STREAM_FLAG_NO_SEEK) == 0) {
 			zend_off_t dummy;
@@ -203,6 +203,16 @@ PHPAPI zend_result _php_stream_cast(php_stream *stream, int castas, void **ret, 
 			stream->ops->seek(stream, stream->position, SEEK_SET, &dummy);
 			stream->readpos = stream->writepos = 0;
 		}
+	}
+
+	if (castas == PHP_STREAM_AS_FD_FOR_COPY) {
+		if (php_stream_is_filtered(stream)) {
+			return FAILURE;
+		}
+		if (stream->ops->cast && stream->ops->cast(stream, castas, ret) == SUCCESS) {
+			return SUCCESS;
+		}
+		return FAILURE;
 	}
 
 	/* filtered streams can only be cast as stdio, and only when fopencookie is present */
@@ -257,7 +267,7 @@ PHPAPI zend_result _php_stream_cast(php_stream *stream, int castas, void **ret, 
 			b) no memory
 			-> lets bail
 		*/
-		php_error_docref(NULL, E_ERROR, "fopencookie failed");
+		php_stream_fatal(stream, CastFailed, "fopencookie failed");
 		return FAILURE;
 #endif
 
@@ -295,9 +305,11 @@ PHPAPI zend_result _php_stream_cast(php_stream *stream, int castas, void **ret, 
 		}
 	}
 
-	if (php_stream_is_filtered(stream) && castas != PHP_STREAM_AS_FD_FOR_SELECT) {
+	if (php_stream_is_filtered(stream) && castas != PHP_STREAM_AS_FD_FOR_SELECT
+			&& castas != PHP_STREAM_AS_FD_FOR_POLL) {
 		if (show_err) {
-			php_error_docref(NULL, E_WARNING, "Cannot cast a filtered stream on this system");
+			php_stream_warn(stream, CastNotSupported,
+				"Cannot cast a filtered stream on this system");
 		}
 		return FAILURE;
 	} else if (stream->ops->cast && stream->ops->cast(stream, castas, ret) == SUCCESS) {
@@ -306,14 +318,17 @@ PHPAPI zend_result _php_stream_cast(php_stream *stream, int castas, void **ret, 
 
 	if (show_err) {
 		/* these names depend on the values of the PHP_STREAM_AS_XXX defines in php_streams.h */
-		static const char *cast_names[4] = {
+		static const char *cast_names[6] = {
 			"STDIO FILE*",
 			"File Descriptor",
 			"Socket Descriptor",
-			"select()able descriptor"
+			"select()able descriptor",
+			"copyable descriptor",
+			"pollable descriptor"
 		};
 
-		php_error_docref(NULL, E_WARNING, "Cannot represent a stream of type %s as a %s", stream->ops->label, cast_names[castas]);
+		php_stream_warn(stream, CastNotSupported,
+			"Cannot represent a stream of type %s as a %s", stream->ops->label, cast_names[castas]);
 	}
 
 	return FAILURE;
@@ -328,7 +343,9 @@ exit_success:
 		 * will be accessing the stream.  Emit a warning so that the end-user will
 		 * know that they should try something else */
 
-		php_error_docref(NULL, E_WARNING, ZEND_LONG_FMT " bytes of buffered data lost during stream conversion!", (zend_long)(stream->writepos - stream->readpos));
+		php_stream_warn_nt(stream, BufferedDataLost,
+			ZEND_LONG_FMT " bytes of buffered data lost during stream conversion!",
+			(zend_long)(stream->writepos - stream->readpos));
 	}
 
 	if (castas == PHP_STREAM_AS_STDIO && ret) {

@@ -3,10 +3,11 @@ session GC accumulates correct total count across multiple subdirs, including em
 --EXTENSIONS--
 session
 --SKIPIF--
-<?php include(__DIR__ . '/../skipif.inc'); ?>
+<?php include __DIR__ . '/../skipif.inc'; ?>
 --INI--
 session.gc_probability=0
 session.gc_maxlifetime=10
+session.use_strict_mode=0
 --FILE--
 <?php
 $base = __DIR__ . '/gc_multi_subdir_test';

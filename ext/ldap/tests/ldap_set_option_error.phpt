@@ -29,7 +29,7 @@ foreach ($controls as $control) {
     try {
         var_dump(ldap_set_option($link, LDAP_OPT_SERVER_CONTROLS, $control));
     } catch (Error $exception) {
-        echo get_class($exception) . ": " . $exception->getMessage() . "\n";
+        echo $exception::class, ': ', $exception->getMessage(), "\n";
     }
 }
 
@@ -38,4 +38,4 @@ foreach ($controls as $control) {
 bool(false)
 ValueError: ldap_set_option(): Control must have an "oid" key
 TypeError: ldap_set_option(): Argument #3 ($value) must contain only arrays, where each array is a control
-TypeError: ldap_set_option(): Argument #3 ($value) must be of type array for the LDAP_OPT_CLIENT_CONTROLS option, string given
+TypeError: ldap_set_option(): Argument #3 ($value) must be of type array for the LDAP_OPT_SERVER_CONTROLS option, string given

@@ -155,6 +155,16 @@ static zend_always_inline zend_result bcmath_check_scale(zend_long scale, uint32
 	return SUCCESS;
 }
 
+static zend_result bcmath_check_precision(zend_long precision, uint32_t arg_num)
+{
+	if (ZEND_LONG_INT_OVFL(precision)) {
+		zend_argument_value_error(arg_num, "must be between " ZEND_LONG_FMT " and %d",
+			(zend_long) ZEND_LONG_MIN, INT_MAX);
+		return FAILURE;
+	}
+	return SUCCESS;
+}
+
 static void php_long2num(bc_num *num, zend_long lval)
 {
 	*num = bc_long2num(lval);
@@ -795,6 +805,10 @@ PHP_FUNCTION(bcround)
 		Z_PARAM_ENUM(rounding_mode, rounding_mode_ce)
 	ZEND_PARSE_PARAMETERS_END();
 
+	if (bcmath_check_precision(precision, 2) == FAILURE) {
+		RETURN_THROWS();
+	}
+
 	switch (rounding_mode) {
 		case ZEND_ENUM_RoundingMode_HalfAwayFromZero:
 		case ZEND_ENUM_RoundingMode_HalfTowardsZero:
@@ -875,10 +889,7 @@ static int bcmath_number_compare(zval *op1, zval *op2);
 #endif
 #define CHECK_SCALE_OVERFLOW(scale) (scale > INT_MAX)
 
-static zend_always_inline bcmath_number_obj_t *get_bcmath_number_from_obj(const zend_object *obj)
-{
-	return (bcmath_number_obj_t*)((char*)(obj) - offsetof(bcmath_number_obj_t, std));
-}
+#define get_bcmath_number_from_obj(obj) ZEND_CONTAINER_OF(obj, bcmath_number_obj_t, std)
 
 static zend_always_inline bcmath_number_obj_t *get_bcmath_number_from_zval(const zval *zv)
 {
@@ -960,7 +971,7 @@ static zval *bcmath_number_write_property(zend_object *obj, zend_string *name, z
 static void bcmath_number_unset_property(zend_object *obj, zend_string *name, void **cache_slot)
 {
 	if (zend_string_equals(name, ZSTR_KNOWN(ZEND_STR_VALUE)) || zend_string_equals_literal(name, "scale")) {
-		zend_throw_error(NULL, "Cannot unset readonly property %s::$%s", ZSTR_VAL(obj->ce->name), ZSTR_VAL(name));
+		zend_throw_error(NULL, "Cannot unset readonly property %pS::$%pS", obj->ce->name, name);
 		return;
 	}
 
@@ -1047,6 +1058,9 @@ static zend_always_inline void bcmath_number_add_internal(
 	}
 	*ret = bc_add(n1, n2, *scale);
 	(*ret)->n_scale = MIN(*scale, (*ret)->n_scale);
+	if (bc_is_zero(*ret)) {
+		(*ret)->n_sign = PLUS;
+	}
 	bc_rm_trailing_zeros(*ret);
 }
 
@@ -1059,6 +1073,9 @@ static zend_always_inline void bcmath_number_sub_internal(
 	}
 	*ret = bc_sub(n1, n2, *scale);
 	(*ret)->n_scale = MIN(*scale, (*ret)->n_scale);
+	if (bc_is_zero(*ret)) {
+		(*ret)->n_sign = PLUS;
+	}
 	bc_rm_trailing_zeros(*ret);
 }
 
@@ -1075,6 +1092,9 @@ static zend_always_inline zend_result bcmath_number_mul_internal(
 	}
 	*ret = bc_multiply(n1, n2, *scale);
 	(*ret)->n_scale = MIN(*scale, (*ret)->n_scale);
+	if (bc_is_zero(*ret)) {
+		(*ret)->n_sign = PLUS;
+	}
 	bc_rm_trailing_zeros(*ret);
 	return SUCCESS;
 }
@@ -1214,7 +1234,7 @@ static zend_result bc_num_from_obj_or_str_or_long(
 	bc_num *num, size_t *full_scale, const zend_object *obj, const zend_string *str, zend_long lval)
 {
 	if (obj) {
-		bcmath_number_obj_t *intern = get_bcmath_number_from_obj(obj);
+		const bcmath_number_obj_t *intern = get_bcmath_number_from_obj(obj);
 		*num = intern->num;
 		if (full_scale) {
 			*full_scale = intern->scale;
@@ -1386,9 +1406,9 @@ failure:
 	Z_PARAM_PROLOGUE(0, 0); \
 	if (UNEXPECTED(!(zend_parse_arg_obj(_arg, &(dest_obj), ce, 0) || \
 		zend_parse_arg_str_or_long(_arg, &(dest_str), &(dest_long), &_dummy, 0, _i)))) { \
-		zend_argument_type_error(_i, "must be of type int, string, or %s, %s given", \
-			ZSTR_VAL(bcmath_number_ce->name), zend_zval_value_name(_arg));             \
-		_error_code = ZPP_ERROR_FAILURE; \
+		zend_argument_type_error(_i, "must be of type int, string, or %pS, %s given", \
+			bcmath_number_ce->name, zend_zval_value_name(_arg));             \
+		_expected_type = Z_EXPECTED_FAILURE; \
  		break; \
  	}
 
@@ -1797,6 +1817,10 @@ PHP_METHOD(BcMath_Number, round)
 		Z_PARAM_ENUM(rounding_mode, rounding_mode_ce);
 	ZEND_PARSE_PARAMETERS_END();
 
+	if (bcmath_check_precision(precision, 1) == FAILURE) {
+		RETURN_THROWS();
+	}
+
 	switch (rounding_mode) {
 		case ZEND_ENUM_RoundingMode_HalfAwayFromZero:
 		case ZEND_ENUM_RoundingMode_HalfTowardsZero:
@@ -1876,7 +1900,7 @@ PHP_METHOD(BcMath_Number, __unserialize)
 	return;
 
 fail:
-	zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %s object", ZSTR_VAL(bcmath_number_ce->name));
+	zend_throw_exception_ex(NULL, 0, "Invalid serialization data for %pS object", bcmath_number_ce->name);
 	RETURN_THROWS();
 }
 

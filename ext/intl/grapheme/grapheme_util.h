@@ -15,14 +15,11 @@
 #ifndef GRAPHEME_GRAPHEME_UTIL_H
 #define GRAPHEME_GRAPHEME_UTIL_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 #include "php_intl.h"
 #include "intl_convert.h"
 
 /* get_break_interator: get a break iterator from the global structure */
-UBreakIterator* grapheme_get_break_iterator(void *stack_buffer, UErrorCode *status );
+UBreakIterator* grapheme_get_break_iterator(UErrorCode *status );
 
 zend_long grapheme_ascii_check(const unsigned char *day, size_t len);
 void grapheme_substr_ascii(char *str, size_t str_len, int32_t f, int32_t l, char **sub_str, int32_t *sub_str_len);
@@ -37,10 +34,7 @@ int32_t grapheme_count_graphemes(UBreakIterator *bi, UChar *string, int32_t stri
 
 int32_t grapheme_get_haystack_offset(UBreakIterator* bi, int32_t offset);
 
-UBreakIterator* grapheme_get_break_iterator(void *stack_buffer, UErrorCode *status );
-#ifdef __cplusplus
-}
-#endif
+UBreakIterator* grapheme_get_break_iterator(UErrorCode *status );
 
 /* OUTSIDE_STRING: check if (possibly negative) long offset is outside the string with int32_t length */
 #define OUTSIDE_STRING(offset, max_len) ( offset <= INT32_MIN || offset > INT32_MAX || (offset < 0 ? -offset > (zend_long) max_len : offset > (zend_long) max_len) )

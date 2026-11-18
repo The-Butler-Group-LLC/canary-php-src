@@ -17,6 +17,7 @@
 
 #include "zend.h"
 #include "zend_globals.h"
+#include "zend_multiply.h"
 
 #ifdef HAVE_VALGRIND
 # include "valgrind/callgrind.h"
@@ -51,6 +52,17 @@ ZEND_API zend_string  *zend_empty_string = NULL;
 ZEND_API zend_string  *zend_one_char_string[256];
 ZEND_API zend_string **zend_known_strings = NULL;
 
+/* this is read-only, so it's ok */
+alignas(16) static const char zend_hexconvtab[] = "0123456789abcdef";
+
+static zend_always_inline void zend_bin2hex_impl(char *out, const unsigned char *in, size_t in_len, const char *hexconvtab)
+{
+	for (size_t i = 0; i < in_len; i++) {
+		out[i * 2] = hexconvtab[in[i] >> 4];
+		out[i * 2 + 1] = hexconvtab[in[i] & 0x0f];
+	}
+}
+
 ZEND_API zend_ulong ZEND_FASTCALL zend_string_hash_func(zend_string *str)
 {
 	return ZSTR_H(str) = zend_hash_func(ZSTR_VAL(str), ZSTR_LEN(str));
@@ -59,6 +71,21 @@ ZEND_API zend_ulong ZEND_FASTCALL zend_string_hash_func(zend_string *str)
 ZEND_API zend_ulong ZEND_FASTCALL zend_hash_func(const char *str, size_t len)
 {
 	return zend_inline_hash_func(str, len);
+}
+
+ZEND_API void ZEND_FASTCALL zend_bin2hex(char *out, const unsigned char *in, size_t in_len)
+{
+	zend_bin2hex_impl(out, in, in_len, zend_hexconvtab);
+}
+
+ZEND_API zend_string *zend_bin2hex_str(const unsigned char *in, size_t in_len)
+{
+	zend_string *result = zend_string_safe_alloc(in_len, 2 * sizeof(char), 0, 0);
+
+	zend_bin2hex(ZSTR_VAL(result), in, in_len);
+	ZSTR_VAL(result)[in_len * 2] = '\0';
+
+	return result;
 }
 
 static void _str_dtor(zval *zv)
@@ -126,6 +153,18 @@ ZEND_API void zend_interned_strings_dtor(void)
 
 	free(zend_known_strings);
 	zend_known_strings = NULL;
+}
+
+ZEND_API zend_string* ZEND_FASTCALL zend_string_finit_existing_interned(const char *str, size_t len, bool permanent, bool fallible)
+{
+	bool was_fallible = CG(interned_strings_fallible);
+	CG(interned_strings_fallible) = fallible;
+
+	zend_string *ret = zend_string_init_existing_interned(str, len, permanent);
+
+	CG(interned_strings_fallible) = was_fallible;
+
+	return ret;
 }
 
 static zend_always_inline zend_string *zend_interned_string_ht_lookup_ex(zend_ulong h, const char *str, size_t size, HashTable *interned_strings)
@@ -288,7 +327,10 @@ static zend_string* ZEND_FASTCALL zend_string_init_existing_interned_permanent(c
 	}
 
 	ZEND_ASSERT(permanent);
-	ret = zend_string_init(str, size, permanent);
+	ret = zend_string_finit(str, size, permanent, CG(interned_strings_fallible));
+	if (UNEXPECTED(!ret)) {
+		return NULL;
+	}
 	ZSTR_H(ret) = h;
 	return ret;
 }
@@ -337,7 +379,10 @@ static zend_string* ZEND_FASTCALL zend_string_init_existing_interned_request(con
 	}
 
 	ZEND_ASSERT(!permanent);
-	ret = zend_string_init(str, size, permanent);
+	ret = zend_string_finit(str, size, permanent, CG(interned_strings_fallible));
+	if (UNEXPECTED(!ret)) {
+		return NULL;
+	}
 	ZSTR_H(ret) = h;
 	return ret;
 }
@@ -473,8 +518,7 @@ ZEND_API zend_string *zend_string_concat2(
 		const char *str1, size_t str1_len,
 		const char *str2, size_t str2_len)
 {
-	size_t len = str1_len + str2_len;
-	zend_string *res = zend_string_alloc(len, 0);
+	zend_string *res = zend_string_safe_alloc(1, str1_len, str2_len, 0);
 
 	char *p = ZSTR_VAL(res);
 	p = zend_mempcpy(p, str1, str1_len);
@@ -489,7 +533,8 @@ ZEND_API zend_string *zend_string_concat3(
 		const char *str2, size_t str2_len,
 		const char *str3, size_t str3_len)
 {
-	size_t len = str1_len + str2_len + str3_len;
+	size_t tmp_len = zend_safe_address_guarded(1, str1_len, str2_len);
+	size_t len = zend_safe_address_guarded(1, tmp_len, str3_len);
 	zend_string *res = zend_string_alloc(len, 0);
 
 	char *p = ZSTR_VAL(res);

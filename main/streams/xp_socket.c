@@ -15,7 +15,7 @@
 #include "php.h"
 #include "ext/standard/file.h"
 #include "php_streams.h"
-#include "php_network.h"
+#include "php_io.h"
 
 #if defined(PHP_WIN32) || defined(__riscos__)
 # undef AF_UNIX
@@ -53,7 +53,7 @@ static const php_stream_ops php_stream_unixdg_socket_ops;
 	(PHP_STREAM_XPORT_IS_UNIX_DG(stream) || PHP_STREAM_XPORT_IS_UNIX_ST(stream))
 #else
 #define PHP_STREAM_XPORT_IS_UNIX_DG(stream) false
-#define PHP_STREAM_XPORT_IS_UNIX_STD(stream) false
+#define PHP_STREAM_XPORT_IS_UNIX_ST(stream) false
 #define PHP_STREAM_XPORT_IS_UNIX(stream) false
 #endif
 #define PHP_STREAM_XPORT_IS_UDP(stream) (php_stream_is(stream, &php_stream_udp_socket_ops))
@@ -114,9 +114,8 @@ retry:
 
 		if (!(stream->flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS)) {
 			estr = php_socket_strerror(err, NULL, 0);
-			php_error_docref(NULL, E_NOTICE,
-				"Send of %zu bytes failed with errno=%d %s",
-				count, err, estr);
+			php_stream_warn(stream, NetworkSendFailed,
+					"Send of %zu bytes failed with errno=%d %s", count, err, estr);
 			efree(estr);
 		}
 	}
@@ -452,8 +451,7 @@ static int php_sockop_set_option(php_stream *stream, int option, int value, void
 							xparam->inputs.addrlen);
 					if (xparam->outputs.returncode == -1) {
 						char *err = php_socket_strerror(php_socket_errno(), NULL, 0);
-						php_error_docref(NULL, E_WARNING,
-						   	"%s\n", err);
+						php_stream_warn(stream, NetworkSendFailed, "%s", err);
 						efree(err);
 					}
 					return PHP_STREAM_OPTION_RETURN_OK;
@@ -520,16 +518,25 @@ static int php_sockop_cast(php_stream *stream, int castas, void **ret)
 			}
 			return SUCCESS;
 		case PHP_STREAM_AS_FD_FOR_SELECT:
+		case PHP_STREAM_AS_FD_FOR_POLL:
 		case PHP_STREAM_AS_FD:
 		case PHP_STREAM_AS_SOCKETD:
 			if (ret)
 				*(php_socket_t *)ret = sock->socket;
 			return SUCCESS;
+		case PHP_STREAM_AS_FD_FOR_COPY:
+			if (ret) {
+				php_io_fd *copy_fd = (php_io_fd *) ret;
+				copy_fd->socket = sock->socket;
+				copy_fd->fd_type = PHP_IO_FD_SOCKET;
+				copy_fd->timeout = sock->timeout;
+				copy_fd->is_blocked = sock->is_blocked;
+			}
+			return SUCCESS;
 		default:
 			return FAILURE;
 	}
 }
-/* }}} */
 
 /* These may look identical, but we need them this way so that
  * we can determine which type of socket we are dealing with
@@ -593,7 +600,8 @@ static const php_stream_ops php_stream_unixdg_socket_ops = {
 /* network socket operations */
 
 #ifdef AF_UNIX
-static inline int parse_unix_address(php_stream_xport_param *xparam, struct sockaddr_un *unix_addr)
+static inline int parse_unix_address(php_stream *stream, php_stream_xport_param *xparam,
+		struct sockaddr_un *unix_addr)
 {
 	memset(unix_addr, 0, sizeof(*unix_addr));
 	unix_addr->sun_family = AF_UNIX;
@@ -612,9 +620,9 @@ static inline int parse_unix_address(php_stream_xport_param *xparam, struct sock
 		 * BUT, to get into this branch of code, the name is too long,
 		 * so we don't care. */
 		xparam->inputs.namelen = max_length;
-		php_error_docref(NULL, E_NOTICE,
-			"socket path exceeded the maximum allowed length of %lu bytes "
-			"and was truncated", max_length);
+		php_stream_notice(stream, InvalidPath,
+				"socket path exceeded the maximum allowed length of %lu bytes and was truncated",
+				max_length);
 	}
 
 	memcpy(unix_addr->sun_path, xparam->inputs.name, xparam->inputs.namelen);
@@ -622,6 +630,17 @@ static inline int parse_unix_address(php_stream_xport_param *xparam, struct sock
 	return 1;
 }
 #endif
+
+static inline bool parse_port(const char *str, int *portno)
+{
+	/* Like atoi(), but reject ports that do not fit in 16 bits */
+	zend_long port = ZEND_STRTOL(str, NULL, 10);
+	if (port < 0 || port > 65535) {
+		return false;
+	}
+	*portno = (int) port;
+	return true;
+}
 
 static inline char *parse_ip_address_ex(const char *str, size_t str_len, int *portno, int get_err, zend_string **err)
 {
@@ -643,7 +662,12 @@ static inline char *parse_ip_address_ex(const char *str, size_t str_len, int *po
 			}
 			return NULL;
 		}
-		*portno = atoi(p + 2);
+		if (!parse_port(p + 2, portno)) {
+			if (get_err) {
+				*err = strpprintf(0, "Failed to parse port of address \"%s\"", str);
+			}
+			return NULL;
+		}
 		return estrndup(str + 1, p - str - 1);
 	}
 #endif
@@ -653,7 +677,12 @@ static inline char *parse_ip_address_ex(const char *str, size_t str_len, int *po
 		colon = NULL;
 	}
 	if (colon) {
-		*portno = atoi(colon + 1);
+		if (!parse_port(colon + 1, portno)) {
+			if (get_err) {
+				*err = strpprintf(0, "Failed to parse port of address \"%s\"", str);
+			}
+			return NULL;
+		}
 		host = estrndup(str, colon - str);
 	} else {
 		if (get_err) {
@@ -670,6 +699,59 @@ static inline char *parse_ip_address(php_stream_xport_param *xparam, int *portno
 	return parse_ip_address_ex(xparam->inputs.name, xparam->inputs.namelen, portno, xparam->want_errortext, &xparam->outputs.error_text);
 }
 
+static int php_sockop_parse_sockvals(php_stream *stream, php_stream_xport_param *xparam,
+		php_sockvals *sockvals)
+{
+	zval *tmpzval;
+
+	if (!PHP_STREAM_CONTEXT(stream)) {
+		return 0;
+	}
+
+#ifdef SO_LINGER
+	if (PHP_STREAM_XPORT_IS_TCP(stream)
+		&& (tmpzval = php_stream_context_get_option(PHP_STREAM_CONTEXT(stream), "socket", "so_linger")) != NULL
+	) {
+		sockvals->mask |= PHP_SOCKVAL_SO_LINGER;
+		sockvals->linger = (int)zval_get_long(tmpzval);
+	}
+#endif
+
+#ifdef SO_RCVBUF
+	if ((tmpzval = php_stream_context_get_option(PHP_STREAM_CONTEXT(stream), "socket", "so_rcvbuf")) != NULL) {
+		zend_long bufsize = zval_get_long(tmpzval);
+
+		if (bufsize < 1 || bufsize > INT_MAX) {
+			if (xparam->want_errortext) {
+				xparam->outputs.error_text = strpprintf(0, "so_rcvbuf context option must be between 1 and %d", INT_MAX);
+			}
+			return -1;
+		}
+
+		sockvals->mask |= PHP_SOCKVAL_SO_RCVBUF;
+		sockvals->rcvbuf = (int) bufsize;
+	}
+#endif
+
+#ifdef SO_SNDBUF
+	if ((tmpzval = php_stream_context_get_option(PHP_STREAM_CONTEXT(stream), "socket", "so_sndbuf")) != NULL) {
+		zend_long bufsize = zval_get_long(tmpzval);
+
+		if (bufsize < 1 || bufsize > INT_MAX) {
+			if (xparam->want_errortext) {
+				xparam->outputs.error_text = strpprintf(0, "so_sndbuf context option must be between 1 and %d", INT_MAX);
+			}
+			return -1;
+		}
+
+		sockvals->mask |= PHP_SOCKVAL_SO_SNDBUF;
+		sockvals->sndbuf = (int) bufsize;
+	}
+#endif
+
+	return 0;
+}
+
 static inline int php_tcp_sockop_bind(php_stream *stream, php_netstream_data_t *sock,
 		php_stream_xport_param *xparam)
 {
@@ -678,6 +760,10 @@ static inline int php_tcp_sockop_bind(php_stream *stream, php_netstream_data_t *
 	long sockopts = STREAM_SOCKOP_NONE;
 	zval *tmpzval = NULL;
 	php_sockvals sockvals = {0};
+
+	if (php_sockop_parse_sockvals(stream, xparam, &sockvals) == -1) {
+		return -1;
+	}
 
 #ifdef AF_UNIX
 	if (PHP_STREAM_XPORT_IS_UNIX(stream)) {
@@ -695,7 +781,9 @@ static inline int php_tcp_sockop_bind(php_stream *stream, php_netstream_data_t *
 			return -1;
 		}
 
-		parse_unix_address(xparam, &unix_addr);
+		php_network_apply_sockvals(sock->socket, &sockvals);
+
+		parse_unix_address(stream, xparam, &unix_addr);
 
 		int result = bind(sock->socket, (const struct sockaddr *)&unix_addr,
 			(socklen_t) offsetof(struct sockaddr_un, sun_path) + xparam->inputs.namelen);
@@ -818,6 +906,10 @@ static inline int php_tcp_sockop_connect(php_stream *stream, php_netstream_data_
 	long sockopts = STREAM_SOCKOP_NONE;
 	php_sockvals sockvals = {0};
 
+	if (php_sockop_parse_sockvals(stream, xparam, &sockvals) == -1) {
+		return -1;
+	}
+
 #ifdef AF_UNIX
 	if (PHP_STREAM_XPORT_IS_UNIX(stream)) {
 		struct sockaddr_un unix_addr;
@@ -831,7 +923,9 @@ static inline int php_tcp_sockop_connect(php_stream *stream, php_netstream_data_
 			return -1;
 		}
 
-		parse_unix_address(xparam, &unix_addr);
+		php_network_apply_sockvals(sock->socket, &sockvals);
+
+		parse_unix_address(stream, xparam, &unix_addr);
 
 		ret = php_network_connect_socket(sock->socket,
 				(const struct sockaddr *)&unix_addr, (socklen_t) offsetof(struct sockaddr_un, sun_path) + xparam->inputs.namelen,

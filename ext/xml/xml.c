@@ -21,7 +21,6 @@
 #include "php.h"
 
 #include "zend_variables.h"
-#include "zend_attributes.h"
 #include "ext/standard/info.h"
 #include "ext/standard/html.h" /* For php_next_utf8_char() */
 
@@ -295,9 +294,7 @@ static void xml_xmlchar_zval(const XML_Char *s, int len, const XML_Char *encodin
 }
 /* }}} */
 
-static inline xml_parser *xml_parser_from_obj(zend_object *obj) {
-	return (xml_parser *)((char *)(obj) - offsetof(xml_parser, std));
-}
+#define xml_parser_from_obj(obj) ZEND_CONTAINER_OF(obj, xml_parser, std)
 
 #define Z_XMLPARSER_P(zv) xml_parser_from_obj(Z_OBJ_P(zv))
 
@@ -612,6 +609,11 @@ static zval *xml_get_ctag(xml_parser *parser)
 	return NULL;
 }
 
+static zend_always_inline bool xml_handler_aborted(void)
+{
+	return EG(exception) != NULL || ZEND_HAS_OOM();
+}
+
 /* {{{ xml_startElementHandler() */
 void xml_startElementHandler(void *userData, const XML_Char *name, const XML_Char **attributes)
 {
@@ -620,6 +622,10 @@ void xml_startElementHandler(void *userData, const XML_Char *name, const XML_Cha
 	zend_string *att, *tag_name, *val;
 
 	if (!parser) {
+		return;
+	}
+
+	if (UNEXPECTED(xml_handler_aborted())) {
 		return;
 	}
 
@@ -645,6 +651,13 @@ void xml_startElementHandler(void *userData, const XML_Char *name, const XML_Cha
 			attributes += 2;
 
 			zend_string_release_ex(att, 0);
+
+			if (ZEND_HAS_OOM()) {
+				zend_string_release_ex(tag_name, false);
+				zval_ptr_dtor(&args[1]);
+				zval_ptr_dtor(&args[2]);
+				return;
+			}
 		}
 
 		zend_call_known_fcc(&parser->startElementHandler, /* retval */ NULL, /* param_count */ 3, args, /* named_params */ NULL);
@@ -686,6 +699,13 @@ void xml_startElementHandler(void *userData, const XML_Char *name, const XML_Cha
 				attributes += 2;
 
 				zend_string_release_ex(att, 0);
+
+				if (ZEND_HAS_OOM()) {
+					zend_string_release_ex(tag_name, false);
+					zval_ptr_dtor(&tag);
+					zval_ptr_dtor(&atr);
+					return;
+				}
 			}
 
 			if (atcnt) {
@@ -722,6 +742,10 @@ void xml_endElementHandler(void *userData, const XML_Char *name)
 	xml_parser *parser = (xml_parser *)userData;
 
 	if (!parser) {
+		return;
+	}
+	
+	if (UNEXPECTED(xml_handler_aborted())) {
 		return;
 	}
 
@@ -787,6 +811,10 @@ void xml_characterDataHandler(void *userData, const XML_Char *s, int len)
 		return;
 	}
 
+	if (UNEXPECTED(xml_handler_aborted())) {
+		return;
+	}
+
 	if (ZEND_FCC_INITIALIZED(parser->characterDataHandler)) {
 		zval args[2];
 		ZVAL_OBJ(&args[0], &parser->std);
@@ -829,16 +857,15 @@ void xml_characterDataHandler(void *userData, const XML_Char *s, int len)
 		zval *myval;
 		/* check if the current tag already has a value - if yes append to that! */
 		if ((myval = zend_hash_find(Z_ARRVAL_P(ctag), ZSTR_KNOWN(ZEND_STR_VALUE))) && Z_TYPE_P(myval) == IS_STRING) {
-			size_t newlen = Z_STRLEN_P(myval) + ZSTR_LEN(decoded_value);
-			Z_STR_P(myval) = zend_string_extend(Z_STR_P(myval), newlen, 0);
+			Z_STR_P(myval) = zend_string_safe_realloc(Z_STR_P(myval), 1, Z_STRLEN_P(myval), ZSTR_LEN(decoded_value), false);
 			strncpy(Z_STRVAL_P(myval) + Z_STRLEN_P(myval) - ZSTR_LEN(decoded_value),
 					ZSTR_VAL(decoded_value), ZSTR_LEN(decoded_value) + 1);
-			zend_string_release_ex(decoded_value, 0);
+			zend_string_release_ex(decoded_value, false);
 		} else {
 			if (doprint || (! parser->skipwhite)) {
 				add_assoc_str(ctag, "value", decoded_value);
 			} else {
-				zend_string_release_ex(decoded_value, 0);
+				zend_string_release_ex(decoded_value, false);
 			}
 		}
 	} else {
@@ -856,11 +883,10 @@ void xml_characterDataHandler(void *userData, const XML_Char *s, int len)
 				if (EXPECTED(Z_TYPE_P(mytype) == IS_STRING) && zend_string_equals_literal(Z_STR_P(mytype), "cdata")) {
 					SEPARATE_ARRAY(curtag);
 					if ((myval = zend_hash_find(Z_ARRVAL_P(curtag), ZSTR_KNOWN(ZEND_STR_VALUE)))) {
-						size_t newlen = Z_STRLEN_P(myval) + ZSTR_LEN(decoded_value);
-						Z_STR_P(myval) = zend_string_extend(Z_STR_P(myval), newlen, 0);
+						Z_STR_P(myval) = zend_string_safe_realloc(Z_STR_P(myval), 1, Z_STRLEN_P(myval), ZSTR_LEN(decoded_value), false);
 						strncpy(Z_STRVAL_P(myval) + Z_STRLEN_P(myval) - ZSTR_LEN(decoded_value),
 								ZSTR_VAL(decoded_value), ZSTR_LEN(decoded_value) + 1);
-						zend_string_release_ex(decoded_value, 0);
+						zend_string_release_ex(decoded_value, false);
 						return;
 					}
 				}
@@ -879,7 +905,7 @@ void xml_characterDataHandler(void *userData, const XML_Char *s, int len)
 		} else if (parser->level == (XML_MAXLEVEL + 1)) {
 								php_error_docref(NULL, E_WARNING, "Maximum depth exceeded - Results truncated");
 		} else {
-			zend_string_release_ex(decoded_value, 0);
+			zend_string_release_ex(decoded_value, false);
 		}
 	}
 }
@@ -1150,7 +1176,7 @@ static bool php_xml_check_string_method_arg(
 	zend_function *method_ptr = zend_hash_find_ptr_lc(&ce->function_table, method_name);
 	if (!method_ptr) {
 		if (arg_num) {
-			zend_argument_value_error(arg_num, "method %s::%s() does not exist", ZSTR_VAL(ce->name), ZSTR_VAL(method_name));
+			zend_argument_value_error(arg_num, "method %pS::%pS() does not exist", ce->name, method_name);
 		}
 		return false;
 	}
@@ -1174,8 +1200,8 @@ static bool php_xml_check_string_method_arg(
 		zend_fcc_dtor(&parser_to_check->fcc_field); \
 		bool status = php_xml_check_string_method_arg(0, new_this_obj, method_name, &parser_to_check->fcc_field); \
 		if (status == false) { \
-			zend_argument_value_error(2, "cannot safely swap to object of class %s as method \"%s\" does not exist, which was set via " handler_set_method, \
-			ZSTR_VAL(new_this_obj->ce->name), ZSTR_VAL(method_name)); \
+			zend_argument_value_error(2, "cannot safely swap to object of class %pS as method \"%pS\" does not exist, which was set via " handler_set_method, \
+			new_this_obj->ce->name, method_name); \
 			zend_string_release(method_name); \
 			RETURN_THROWS(); \
 		} \
@@ -1213,8 +1239,7 @@ PHP_FUNCTION(xml_set_object)
 		OBJ_RELEASE(parser->object);
 	}
 
-	parser->object = new_this;
-	GC_ADDREF(parser->object);
+	parser->object = zend_object_copy(new_this);
 
 	RETURN_TRUE;
 }
@@ -1313,6 +1338,12 @@ PHP_FUNCTION(xml_set_element_handler)
 	}
 
 	set_handlers:
+	if (parser->isparsing) {
+		zend_release_fcall_info_cache(&start_fcc);
+		zend_release_fcall_info_cache(&end_fcc);
+		zend_throw_error(NULL, "Cannot change handlers while parsing");
+		RETURN_THROWS();
+	}
 	xml_set_handler(&parser->startElementHandler, &start_fcc);
 	xml_set_handler(&parser->endElementHandler, &end_fcc);
 	XML_SetElementHandler(parser->parser, xml_startElementHandler, xml_endElementHandler);
@@ -1366,6 +1397,11 @@ static void php_xml_set_handler_parse_callable(
 		php_xml_set_handler_parse_callable(INTERNAL_FUNCTION_PARAM_PASSTHRU, &parser, &handler_fcc); \
 		if (EG(exception)) { return; } \
 		ZEND_ASSERT(parser); \
+		if (parser->isparsing) { \
+			zend_release_fcall_info_cache(&handler_fcc); \
+			zend_throw_error(NULL, "Cannot change handlers while parsing"); \
+			RETURN_THROWS(); \
+		} \
 		xml_set_handler(&parser->parser_handler_name, &handler_fcc); \
 		parse_function(parser->parser, c_function); \
 		RETURN_TRUE; \

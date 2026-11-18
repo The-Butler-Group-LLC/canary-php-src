@@ -23,14 +23,15 @@
 
 #include "../intl_convertcpp.h"
 
-extern "C" {
 #include "../php_intl.h"
 #include "../locale/locale.h"
 #define USE_CALENDAR_POINTER 1
 #include "../calendar/calendar_class.h"
-#include <ext/date/php_date.h>
 #include "../common/common_date.h"
-}
+
+BEGIN_EXTERN_C()
+#include <ext/date/php_date.h>
+END_EXTERN_C()
 
 using icu::Locale;
 using icu::DateFormat;
@@ -50,9 +51,9 @@ static constexpr DateFormat::EStyle valid_styles[] = {
 		DateFormat::kShortRelative,
 };
 
-static bool valid_format(zval *z) {
+static bool valid_format(const zval *z) {
 	if (Z_TYPE_P(z) == IS_LONG) {
-		zend_long lval = Z_LVAL_P(z);
+		const zend_long lval = Z_LVAL_P(z);
 		for (int i = 0; i < sizeof(valid_styles) / sizeof(*valid_styles); i++) {
 			if ((zend_long)valid_styles[i] == lval) {
 				return true;
@@ -149,7 +150,7 @@ U_CFUNC PHP_FUNCTION(datefmt_format_object)
 		timeStyle = (DateFormat::EStyle)(timeStyle & ~DateFormat::kRelative);
 	}
 
-	zend_class_entry *instance_ce = object->ce;
+	const zend_class_entry *instance_ce = object->ce;
 	if (instanceof_function(instance_ce, Calendar_ce_ptr)) {
 		Calendar *obj_cal = calendar_fetch_native_calendar(object);
 		if (obj_cal == NULL) {

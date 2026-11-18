@@ -33,6 +33,43 @@
 
 #ifdef LIBXML_XPATH_ENABLED
 
+static dom_object *dom_xpath_intern_from_entry(zval *entry, xmlDocPtr doc)
+{
+	if (Z_TYPE_P(entry) == IS_OBJECT) {
+		dom_object *obj = Z_DOMOBJ_P(entry);
+		if (obj->document && obj->document->ptr == doc) {
+			return obj;
+		}
+	} else if (Z_TYPE_P(entry) == IS_ARRAY) {
+		zval *inner;
+		ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(entry), inner) {
+			dom_object *obj = dom_xpath_intern_from_entry(inner, doc);
+			if (obj) {
+				return obj;
+			}
+		} ZEND_HASH_FOREACH_END();
+	}
+	return NULL;
+}
+
+static dom_object *dom_xpath_intern_for_doc(dom_xpath_object *xpath_obj, xmlDocPtr doc)
+{
+	if (xpath_obj->dom.document && xpath_obj->dom.document->ptr == doc) {
+		return &xpath_obj->dom;
+	}
+	HashTable *node_list = xpath_obj->xpath_callbacks.node_list;
+	if (node_list) {
+		zval *entry;
+		ZEND_HASH_PACKED_FOREACH_VAL(node_list, entry) {
+			dom_object *obj = dom_xpath_intern_from_entry(entry, doc);
+			if (obj) {
+				return obj;
+			}
+		} ZEND_HASH_FOREACH_END();
+	}
+	return &xpath_obj->dom;
+}
+
 void dom_xpath_objects_free_storage(zend_object *object)
 {
 	dom_xpath_object *intern = php_xpath_obj_from_obj(object);
@@ -59,7 +96,8 @@ static void dom_xpath_proxy_factory(xmlNodePtr node, zval *child, dom_object *in
 
 	ZEND_ASSERT(node->type != XML_NAMESPACE_DECL);
 
-	php_dom_create_object(node, child, intern);
+	dom_xpath_object *xobj = php_xpath_obj_from_obj(&intern->std);
+	php_dom_create_object(node, child, dom_xpath_intern_for_doc(xobj, node->doc));
 }
 
 static dom_xpath_object *dom_xpath_ext_fetch_intern(xmlXPathParserContextPtr ctxt)
@@ -125,6 +163,13 @@ static void dom_xpath_construct(INTERNAL_FUNCTION_PARAMETERS, zend_class_entry *
 		RETURN_THROWS();
 	}
 
+	dom_xpath_object *intern = Z_XPATHOBJ_P(ZEND_THIS);
+	if (UNEXPECTED(intern->evaluation_depth > 0)) {
+		zend_throw_error(NULL, "Cannot call %pS::__construct() while an XPath evaluation is in progress",
+			Z_OBJCE_P(ZEND_THIS)->name);
+		RETURN_THROWS();
+	}
+
 	DOM_GET_OBJ(docp, doc, xmlDocPtr, docobj);
 
 	xmlXPathContextPtr ctx = xmlXPathNewContext(docp);
@@ -133,7 +178,6 @@ static void dom_xpath_construct(INTERNAL_FUNCTION_PARAMETERS, zend_class_entry *
 		RETURN_THROWS();
 	}
 
-	dom_xpath_object *intern = Z_XPATHOBJ_P(ZEND_THIS);
 	xmlXPathContextPtr oldctx = intern->dom.ptr;
 	if (oldctx != NULL) {
 		php_libxml_decrement_doc_ref((php_libxml_node_object *) &intern->dom);
@@ -189,7 +233,7 @@ zend_result dom_xpath_document_read(dom_object *obj, zval *retval)
 
 /* {{{ registerNodeNamespaces bool*/
 static inline dom_xpath_object *php_xpath_obj_from_dom_obj(dom_object *obj) {
-	return (dom_xpath_object*)((char*)(obj) - offsetof(dom_xpath_object, dom));
+	return ZEND_CONTAINER_OF(obj, dom_xpath_object, dom);
 }
 
 zend_result dom_xpath_register_node_ns_read(dom_object *obj, zval *retval)
@@ -274,6 +318,10 @@ static void php_xpath_eval(INTERNAL_FUNCTION_PARAMETERS, int type, bool modern) 
 		RETURN_THROWS();
 	}
 
+	xmlNodePtr old_node = ctxp->node;
+	xmlNsPtr *old_namespaces = ctxp->namespaces;
+	int old_nsNr = ctxp->nsNr;
+
 	ctxp->node = nodep;
 
 	php_dom_in_scope_ns in_scope_ns;
@@ -288,13 +336,15 @@ static void php_xpath_eval(INTERNAL_FUNCTION_PARAMETERS, int type, bool modern) 
 		ctxp->nsNr = in_scope_ns.count;
 	}
 
+	intern->evaluation_depth++;
 	xmlXPathObjectPtr xpathobjp = xmlXPathEvalExpression(BAD_CAST expr, ctxp);
-	ctxp->node = NULL;
+	intern->evaluation_depth--;
+	ctxp->node = old_node;
+	ctxp->namespaces = old_namespaces;
+	ctxp->nsNr = old_nsNr;
 
 	if (register_node_ns && nodep != NULL) {
 		php_dom_in_scope_ns_destroy(&in_scope_ns);
-		ctxp->namespaces = NULL;
-		ctxp->nsNr = 0;
 	}
 
 	if (! xpathobjp) {
@@ -325,7 +375,9 @@ static void php_xpath_eval(INTERNAL_FUNCTION_PARAMETERS, int type, bool modern) 
 
 			if (xpathobjp->type == XPATH_NODESET && NULL != (nodesetp = xpathobjp->nodesetval) && nodesetp->nodeNr) {
 				array_init_size(&retval, nodesetp->nodeNr);
-				zend_hash_real_init_packed(Z_ARRVAL_P(&retval));
+				if (zend_hash_real_finit_packed(Z_ARRVAL(retval), /* fallible */ true) != SUCCESS) {
+					goto oom_nodeset;
+				}
 				for (int i = 0; i < nodesetp->nodeNr; i++) {
 					xmlNodePtr node = nodesetp->nodeTab[i];
 					zval child;
@@ -347,14 +399,18 @@ static void php_xpath_eval(INTERNAL_FUNCTION_PARAMETERS, int type, bool modern) 
 
 						/* Make sure parent dom object exists, so we can take an extra reference. */
 						zval parent_zval; /* don't destroy me, my lifetime is transferred to the fake namespace decl */
-						php_dom_create_object(nsparent, &parent_zval, &intern->dom);
+						php_dom_create_object(nsparent, &parent_zval, dom_xpath_intern_for_doc(intern, nsparent->doc));
 						dom_object *parent_intern = Z_DOMOBJ_P(&parent_zval);
 
 						node = php_dom_create_fake_namespace_decl(nsparent, original, &child, parent_intern);
 					} else {
-						php_dom_create_object(node, &child, &intern->dom);
+						dom_object *parent = dom_xpath_intern_for_doc(intern, node->doc);
+						php_dom_create_object(node, &child, parent);
 					}
 					add_next_index_zval(&retval, &child);
+					if (ZEND_HAS_OOM()) {
+						goto oom_nodeset;
+					}
 				}
 				release_array = true;
 			} else {
@@ -369,6 +425,13 @@ static void php_xpath_eval(INTERNAL_FUNCTION_PARAMETERS, int type, bool modern) 
 			mapptr->release_array = release_array;
 			mapptr->handler = &php_dom_obj_map_nodeset;
 			break;
+
+oom_nodeset:
+			zval_ptr_dtor(&retval);
+			xmlXPathFreeObject(xpathobjp);
+			zval_ptr_dtor(return_value);
+			ZVAL_NULL(return_value);
+			RETURN_OOM();
 		}
 
 		case XPATH_BOOLEAN:
@@ -487,14 +550,20 @@ PHP_METHOD(DOMXPath, quote) {
 		RETURN_THROWS();
 	}
 	if (memchr(input, '\'', input_len) == NULL) {
-		zend_string *const output = zend_string_safe_alloc(1, input_len, 2, false);
+		zend_string *const output = zend_string_safe_falloc(1, input_len, 2, false, /* fallible */ true);
+		if (UNEXPECTED(!output)) {
+			RETURN_OOM();
+		}
 		ZSTR_VAL(output)[0] = '\'';
 		memcpy(ZSTR_VAL(output) + 1, input, input_len);
 		ZSTR_VAL(output)[input_len + 1] = '\'';
 		ZSTR_VAL(output)[input_len + 2] = '\0';
 		RETURN_NEW_STR(output);
 	} else if (memchr(input, '"', input_len) == NULL) {
-		zend_string *const output = zend_string_safe_alloc(1, input_len, 2, false);
+		zend_string *const output = zend_string_safe_falloc(1, input_len, 2, false, /* fallible */ true);
+		if (UNEXPECTED(!output)) {
+			RETURN_OOM();
+		}
 		ZSTR_VAL(output)[0] = '"';
 		memcpy(ZSTR_VAL(output) + 1, input, input_len);
 		ZSTR_VAL(output)[input_len + 1] = '"';
@@ -518,6 +587,10 @@ PHP_METHOD(DOMXPath, quote) {
 			smart_str_appendc(&output, quote_method);
 			ptr += bytes_until_quote;
 			smart_str_appendc(&output, ',');
+			if (ZEND_HAS_OOM()) {
+				smart_str_free(&output);
+				RETURN_OOM();
+			}
 		}
 		ZEND_ASSERT(ptr == end);
 		ZSTR_VAL(output.s)[ZSTR_LEN(output.s) - 1] = ')';

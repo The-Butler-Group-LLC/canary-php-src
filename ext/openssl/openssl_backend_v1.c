@@ -285,7 +285,7 @@ static bool php_openssl_pkey_init_ec_data(EC_KEY *eckey, zval *data, bool *is_pr
 	if (curve_name_zv && Z_TYPE_P(curve_name_zv) == IS_STRING && Z_STRLEN_P(curve_name_zv) > 0) {
 		int nid = OBJ_sn2nid(Z_STRVAL_P(curve_name_zv));
 		if (nid == NID_undef) {
-			php_error_docref(NULL, E_WARNING, "Unknown elliptic curve (short) name %s", Z_STRVAL_P(curve_name_zv));
+			php_error_docref(NULL, E_WARNING, "Unknown elliptic curve (short) name %pS", Z_STR_P(curve_name_zv));
 			goto clean_exit;
 		}
 
@@ -589,6 +589,11 @@ zend_string *php_openssl_dh_compute_key(EVP_PKEY *pkey, char *pub_str, size_t pu
 	}
 
 	BIGNUM *pub = BN_bin2bn((unsigned char*)pub_str, (int)pub_len, NULL);
+	if (pub == NULL) {
+		php_openssl_store_errors();
+		return NULL;
+	}
+
 	zend_string *data = zend_string_alloc(DH_size(dh), 0);
 	int len = DH_compute_key((unsigned char*)ZSTR_VAL(data), pub, dh);
 	BN_free(pub);

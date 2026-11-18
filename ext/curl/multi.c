@@ -48,9 +48,7 @@
 
 zend_class_entry *curl_multi_ce;
 
-static inline php_curlm *curl_multi_from_obj(zend_object *obj) {
-	return (php_curlm *)((char *)(obj) - offsetof(php_curlm, std));
-}
+#define curl_multi_from_obj(obj) ZEND_CONTAINER_OF(obj, php_curlm, std)
 
 #define Z_CURL_MULTI_P(zv) curl_multi_from_obj(Z_OBJ_P(zv))
 
@@ -256,8 +254,15 @@ PHP_FUNCTION(curl_multi_exec)
 			_php_curl_verify_handlers(ch, /* reporterror */ true);
 		}
 	}
+	
+	bool failed;
 
-	still_running = zval_get_long(z_still_running);
+	still_running = zval_try_get_long(z_still_running, &failed);
+	if (UNEXPECTED(failed)) {
+		zend_argument_type_error(2, "must be of type int, %s given", zend_zval_value_name(z_still_running));
+		RETURN_THROWS();
+	}
+	
 	error = curl_multi_perform(mh->multi, &still_running);
 	ZEND_TRY_ASSIGN_REF_LONG(z_still_running, still_running);
 
@@ -445,7 +450,7 @@ static int _php_server_push_callback(CURL *parent_ch, CURL *easy, size_t num_hea
 }
 /* }}} */
 
-static bool _php_curl_multi_setopt(php_curlm *mh, zend_long option, zval *zvalue, zval *return_value) /* {{{ */
+static bool _php_curl_multi_setopt(php_curlm *mh, zend_long option, zval *zvalue) /* {{{ */
 {
 	CURLMcode error = CURLM_OK;
 
@@ -480,9 +485,9 @@ static bool _php_curl_multi_setopt(php_curlm *mh, zend_long option, zval *zvalue
 			}
 
 			char *error_str = NULL;
-			if (UNEXPECTED(!zend_is_callable_ex(zvalue, /* object */ NULL, /* check_flags */ 0, /* callable_name */ NULL, &mh->handlers.server_push, /* error */ &error_str))) {
+			if (UNEXPECTED(!zend_is_callable(zvalue, &mh->handlers.server_push, &error_str))) {
 				if (!EG(exception)) {
-					zend_argument_type_error(2, "must be a valid callback for option CURLMOPT_PUSHFUNCTION, %s", error_str);
+					zend_argument_type_error(3, "must be a valid callback for option CURLMOPT_PUSHFUNCTION, %s", error_str);
 				}
 				efree(error_str);
 				return false;
@@ -523,7 +528,7 @@ PHP_FUNCTION(curl_multi_setopt)
 
 	mh = Z_CURL_MULTI_P(z_mh);
 
-	RETURN_BOOL(_php_curl_multi_setopt(mh, options, zvalue, return_value));
+	RETURN_BOOL(_php_curl_multi_setopt(mh, options, zvalue));
 }
 /* }}} */
 

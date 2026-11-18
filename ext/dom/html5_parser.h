@@ -8,7 +8,7 @@
    |                                                                      |
    | SPDX-License-Identifier: BSD-3-Clause                                |
    +----------------------------------------------------------------------+
-   | Authors: Niels Dossche <nielsdos@php.net>                            |
+   | Authors: Nora Dossche  <ndossche@php.net>                            |
    +----------------------------------------------------------------------+
 */
 
@@ -77,6 +77,7 @@ lexbor_libxml2_bridge_status lexbor_libxml2_bridge_convert_fragment(
     xmlNodePtr *fragment_out,
     bool compact_text_nodes,
     bool create_default_ns,
+    bool in_template_contents,
     php_dom_private_data *private_data
 );
 void lexbor_libxml2_bridge_report_errors(

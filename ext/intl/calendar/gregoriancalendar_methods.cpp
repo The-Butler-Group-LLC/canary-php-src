@@ -24,16 +24,16 @@
 #include <unicode/gregocal.h>
 #include <unicode/ustring.h>
 
-extern "C" {
 #include "../php_intl.h"
 #include "../intl_common.h"
 #define USE_TIMEZONE_POINTER 1
 #include "../timezone/timezone_class.h"
 #define USE_CALENDAR_POINTER 1
 #include "calendar_class.h"
+BEGIN_EXTERN_C()
 #include <ext/date/php_date.h>
+END_EXTERN_C()
 #include "zend_exceptions.h"
-}
 
 using icu::GregorianCalendar;
 using icu::Locale;
@@ -143,7 +143,7 @@ static void _php_intlgregcal_constructor_body(INTERNAL_FUNCTION_PARAMETERS, bool
 
 	if (variant <= 2) {
 		// From timezone and locale (0 to 2 arguments)
-		TimeZone *tz = timezone_process_timezone_argument(timezone_object, timezone_string, nullptr);
+		TimeZone *tz = timezone_process_timezone_argument(timezone_object, timezone_string, nullptr, 1);
 		if (tz == nullptr) {
 			// TODO: Exception should always occur already?
 			if (!EG(exception)) {
@@ -165,7 +165,6 @@ static void _php_intlgregcal_constructor_body(INTERNAL_FUNCTION_PARAMETERS, bool
 		if (U_FAILURE(status)) {
 			intl_error_set(NULL, status, "error creating ICU "
 				"GregorianCalendar from time zone and locale");
-			delete tz;
 			if (!is_constructor) {
 				zval_ptr_dtor(return_value);
 				RETVAL_NULL();
@@ -176,7 +175,7 @@ static void _php_intlgregcal_constructor_body(INTERNAL_FUNCTION_PARAMETERS, bool
 		// From date/time (3, 5 or 6 arguments)
 		GregorianCalendar *tmp;
 		for (int i = 0; i < variant; i++) {
-			ZEND_VALUE_ERROR_OUT_OF_BOUND_VALUE(largs[i], hasThis() ? (i-1) : i);
+			ZEND_VALUE_ERROR_OUT_OF_BOUND_VALUE(largs[i], i + 1);
 		}
 
 		if (variant == 3) {

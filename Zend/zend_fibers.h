@@ -25,7 +25,6 @@
 #define ZEND_FIBER_GUARD_PAGES 1
 
 #define ZEND_FIBER_DEFAULT_C_STACK_SIZE (4096 * (((sizeof(void *)) < 8) ? 256 : 512))
-#define ZEND_FIBER_VM_STACK_SIZE (1024 * sizeof(zval))
 
 BEGIN_EXTERN_C()
 
@@ -102,9 +101,6 @@ struct _zend_fiber {
 	/* PHP object handle. */
 	zend_object std;
 
-	/* Flags are defined in enum zend_fiber_flag. */
-	uint8_t flags;
-
 	/* Native C fiber context. */
 	zend_fiber_context context;
 
@@ -114,8 +110,13 @@ struct _zend_fiber {
 	/* Fiber that suspended us. */
 	zend_fiber_context *previous;
 
-	/* Callback and info / cache to be used when fiber is started. */
-	zend_fcall_info fci;
+	/* Flags are defined in enum zend_fiber_flag. */
+	uint8_t flags;
+
+	/* Callback and parameters to be used when fiber is started. */
+	uint32_t param_count;
+	zval *params;
+	HashTable *named_params;
 	zend_fcall_info_cache fci_cache;
 
 	/* Current Zend VM execute data being run by the fiber. */
@@ -154,7 +155,7 @@ static zend_always_inline zend_fiber *zend_fiber_from_context(zend_fiber_context
 {
 	ZEND_ASSERT(context->kind == zend_ce_fiber && "Fiber context does not belong to a Zend fiber");
 
-	return (zend_fiber *)(((char *) context) - offsetof(zend_fiber, context));
+	return ZEND_CONTAINER_OF(context, zend_fiber, context);
 }
 
 static zend_always_inline zend_fiber_context *zend_fiber_get_context(zend_fiber *fiber)

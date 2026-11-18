@@ -20,7 +20,7 @@
 #include <dmalloc.h>
 #endif
 
-#define PHP_API_VERSION 20250926
+#define PHP_API_VERSION 20261113
 #define YYDEBUG 0
 #define PHP_DEFAULT_CHARSET "UTF-8"
 
@@ -42,6 +42,8 @@
 # define PHP_OS_FAMILY			"Darwin"
 #elif defined(__sun__)
 # define PHP_OS_FAMILY			"Solaris"
+#elif defined(_AIX)
+# define PHP_OS_FAMILY			"AIX"
 #elif defined(__linux__)
 # define PHP_OS_FAMILY			"Linux"
 #else
@@ -205,12 +207,8 @@ typedef unsigned int socklen_t;
 #include <string.h>
 
 #ifdef HAVE_PWD_H
-# ifdef PHP_WIN32
-#include "win32/param.h"
-# else
-#include <pwd.h>
-#include <sys/param.h>
-# endif
+# include <pwd.h>
+# include <sys/param.h>
 #endif
 
 #include <limits.h>
@@ -295,26 +293,17 @@ END_EXTERN_C()
 #define error_handling_t zend_error_handling_t
 
 BEGIN_EXTERN_C()
-static inline ZEND_ATTRIBUTE_DEPRECATED void php_set_error_handling(error_handling_t error_handling, zend_class_entry *exception_class)
+ZEND_ATTRIBUTE_DEPRECATED static inline void php_set_error_handling(error_handling_t error_handling, zend_class_entry *exception_class)
 {
 	zend_replace_error_handling(error_handling, exception_class, NULL);
 }
-static inline ZEND_ATTRIBUTE_DEPRECATED void php_std_error_handling(void) {}
+ZEND_ATTRIBUTE_DEPRECATED static inline void php_std_error_handling(void) {}
 
-PHPAPI ZEND_COLD void php_verror(const char *docref, const char *params, int type, const char *format, va_list args) PHP_ATTRIBUTE_FORMAT(printf, 4, 0);
+PHPAPI ZEND_COLD void php_verror(const char *docref, int type, const char *format, va_list args) PHP_ATTRIBUTE_FORMAT(printf, 3, 0);
 
 /* PHPAPI void php_error(int type, const char *format, ...); */
 PHPAPI ZEND_COLD void php_error_docref(const char *docref, int type, const char *format, ...)
 	PHP_ATTRIBUTE_FORMAT(printf, 3, 4);
-PHPAPI ZEND_COLD void php_error_docref_unchecked(const char *docref, int type, const char *format, ...);
-PHPAPI ZEND_COLD void php_error_docref1(const char *docref, const char *param1, int type, const char *format, ...)
-	PHP_ATTRIBUTE_FORMAT(printf, 4, 5);
-PHPAPI ZEND_COLD void php_error_docref2(const char *docref, const char *param1, const char *param2, int type, const char *format, ...)
-	PHP_ATTRIBUTE_FORMAT(printf, 5, 6);
-#ifdef PHP_WIN32
-PHPAPI ZEND_COLD void php_win32_docref1_from_error(DWORD error, const char *param1);
-PHPAPI ZEND_COLD void php_win32_docref2_from_error(DWORD error, const char *param1, const char *param2);
-#endif
 END_EXTERN_C()
 
 #define zenderror phperror
@@ -333,7 +322,7 @@ PHPAPI extern int (*php_register_internal_extensions_func)(void);
 PHPAPI int php_register_internal_extensions(void);
 PHPAPI void php_register_pre_request_shutdown(void (*func)(void *), void *userdata);
 PHPAPI void php_com_initialize(void);
-PHPAPI char *php_get_current_user(void);
+PHPAPI zend_string *php_get_current_user(void);
 
 PHPAPI const char *php_get_internal_encoding(void);
 PHPAPI const char *php_get_input_encoding(void);
@@ -380,6 +369,7 @@ END_EXTERN_C()
 #define PHP_MINFO		ZEND_MODULE_INFO_N
 #define PHP_GINIT		ZEND_GINIT
 #define PHP_GSHUTDOWN	ZEND_GSHUTDOWN
+#define PHP_CINIT(module)		php_##module##_child_init
 
 #define PHP_MINIT_FUNCTION		ZEND_MODULE_STARTUP_D
 #define PHP_MSHUTDOWN_FUNCTION	ZEND_MODULE_SHUTDOWN_D
@@ -388,6 +378,7 @@ END_EXTERN_C()
 #define PHP_MINFO_FUNCTION		ZEND_MODULE_INFO_D
 #define PHP_GINIT_FUNCTION		ZEND_GINIT_FUNCTION
 #define PHP_GSHUTDOWN_FUNCTION	ZEND_GSHUTDOWN_FUNCTION
+#define PHP_CINIT_FUNCTION(module)	static void php_##module##_child_init(void)
 
 #define PHP_MODULE_GLOBALS		ZEND_MODULE_GLOBALS
 

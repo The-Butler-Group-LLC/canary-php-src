@@ -17,8 +17,6 @@
 #endif
 
 #include "php.h"
-#include "php_ini.h"
-#include "ext/standard/info.h"
 #include "php_com_dotnet.h"
 #include "php_com_dotnet_internal.h"
 
@@ -117,7 +115,7 @@ static void php_com_variant_from_zval_ex(VARIANT *v, zval *z, int codepage, VART
 			break;
 
 		case IS_OBJECT:
-			if (php_com_is_valid_object(z)) {
+			if (php_com_is_valid_object(Z_OBJ_P(z))) {
 				obj = CDNO_FETCH(z);
 				if (V_VT(&obj->v) == VT_DISPATCH) {
 					/* pass the underlying object */
@@ -134,7 +132,7 @@ static void php_com_variant_from_zval_ex(VARIANT *v, zval *z, int codepage, VART
 			} else {
 				/* export the PHP object using our COM wrapper */
 				V_VT(v) = VT_DISPATCH;
-				V_DISPATCH(v) = php_com_wrapper_export(z);
+				V_DISPATCH(v) = php_com_wrapper_export(Z_OBJ_P(z));
 			}
 			break;
 
